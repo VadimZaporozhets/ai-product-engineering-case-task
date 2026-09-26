@@ -10,7 +10,7 @@ import { json, pageviewRequests } from "./fake-wikimedia.ts";
 
 type Recording = { url: string; status: number; body: unknown };
 
-const RECORDING = process.env.WIKI_INTEREST_RECORD === "1";
+export const RECORDING = process.env.WIKI_INTEREST_RECORD === "1";
 
 export function recordedWikimedia(name: string) {
   const file = fileURLToPath(new URL(`fixtures/${name}.json`, import.meta.url));
