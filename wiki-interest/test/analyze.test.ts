@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { EXIT_CODES } from "../src/cli.ts";
 import { fakeWikimedia } from "./fake-wikimedia.ts";
-import { astronomyInUkrainian, run, runJson } from "./run-cli.ts";
+import { astronomyInUkrainian, run, runFilePath, runJson } from "./run-cli.ts";
 
 describe("analyze one Topic in one Edition", () => {
   test("prints the rerun line in resolved form and one result row", async () => {
@@ -235,7 +235,7 @@ describe("analyze one Topic in one Edition", () => {
     const runFolders = readdirSync(join(outputDir, "wiki-interest-runs"));
     expect(runFolders).toHaveLength(2);
     for (const { stdout } of [first, second]) {
-      const runFile = stdout.match(/^run file: (.+)$/m)![1]!;
+      const runFile = runFilePath(stdout);
       expect(runFile.startsWith(join(outputDir, "wiki-interest-runs"))).toBe(true);
       const saved = runJson(stdout);
       expect(saved.request).toMatchObject({

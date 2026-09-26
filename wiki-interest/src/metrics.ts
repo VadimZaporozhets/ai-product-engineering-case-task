@@ -88,7 +88,7 @@ function computeMetrics(rows: MonthRow[], articles: ArticleViews[], firstMonths:
     growth: change(halves.first.viewsPerMillion, halves.second.viewsPerMillion),
     rawChange: change(averageViews(first), averageViews(second)),
     halves,
-    mannKendall: mannKendall(withData.map((row) => shareOfEdition([row]) ?? 0)),
+    mannKendall: mannKendall(withData.map((row) => monthShare(row) ?? 0)),
     topDays,
     topDaysShare: windowViews > 0 ? sum(topDays.map((day) => day.views)) / windowViews : null,
     firstMonths,
@@ -114,6 +114,11 @@ function highestDays(articles: ArticleViews[], count: number): TopDay[] {
     .map(([day, views]) => ({ day, views }))
     .sort((a, b) => b.views - a.views || a.day.localeCompare(b.day))
     .slice(0, count);
+}
+
+/** Share of edition of one month, in views per million; null when the Edition has no views that month. */
+export function monthShare(row: MonthRow): number | null {
+  return shareOfEdition([row]);
 }
 
 /** Share of edition as a ratio of sums over the given months, in views per million. */

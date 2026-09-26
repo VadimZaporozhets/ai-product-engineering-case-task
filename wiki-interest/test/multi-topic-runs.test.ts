@@ -2,22 +2,9 @@ import { readdirSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { EXIT_CODES } from "../src/cli.ts";
 import { fakeWikimedia } from "./fake-wikimedia.ts";
-import { EDITION_VIEWS, linear, run, runJson } from "./run-cli.ts";
+import { EDITION_VIEWS, fourBaskets, linear, run, runJson, twoTopicsInTwoEditions } from "./run-cli.ts";
 
 const NOT_ENOUGH_EVIDENCE = "not enough evidence (low or insufficient Confidence, Missing articles and errors; not ranked):";
-
-/** Astronomy (Q333) and physics (Q413), each with an Article in uk and pl. */
-function twoTopicsInTwoEditions() {
-  return fakeWikimedia()
-    .item("Q333", {
-      label: "astronomy",
-      description: "natural science studying celestial objects",
-      articles: { uk: "Астрономія", pl: "Astronomia" },
-    })
-    .item("Q413", { label: "physics", description: "natural science", articles: { uk: "Фізика", pl: "Fizyka" } })
-    .editionTotals("uk", () => EDITION_VIEWS)
-    .editionTotals("pl", () => EDITION_VIEWS);
-}
 
 /** Splits a command line into words the way a POSIX shell does for the quoting the CLI prints: '…' and '\''. */
 function shellWords(command: string): string[] {
@@ -248,7 +235,22 @@ describe("a Run of several Topics and Editions", () => {
     );
   });
 
-  test("prints the rerun line, resolution, tables, Reasons, Caveats, next steps and file paths, in that order", async () => {
+  test.each([
+    { run: "whose only Basket failed", pl: { status: 503 } },
+    { run: "whose other Baskets passed every Check", pl: {} },
+  ])("a Run $run doesn't say every Check passed when a Basket is an error row", async ({ pl }) => {
+    const fake = twoTopicsInTwoEditions()
+      .article("uk", "Астрономія", () => 5_000, { status: 503 })
+      .article("pl", "Astronomia", () => 5_000, pl);
+
+    const { code, stdout } = await run(["analyze", "--topics", "Q333", "--editions", "uk,pl"], fake);
+
+    expect(code).toBe(EXIT_CODES.partialFailure);
+    expect(stdout).not.toContain("every Check passed");
+    expect(stdout).toContain("reasons: none; error rows have no Checks, and next steps say what failed\n");
+  });
+
+  test("prints the rerun line, resolution, tables, Reasons, Caveats, next steps, the Run file and the chart, in that order", async () => {
     const fake = twoTopicsInTwoEditions()
       .article("uk", "Астрономія", () => 5_000)
       .article("pl", "Astronomia", () => 600)
@@ -266,6 +268,7 @@ describe("a Run of several Topics and Editions", () => {
       /^caveats:$/m,
       /^next steps:$/m,
       /^run file: /m,
+      /^chart: /m,
     ].map((section) => stdout.search(section));
     expect(sections.every((index) => index >= 0)).toBe(true);
     expect(sections).toEqual([...sections].sort((a, b) => a - b));
@@ -344,15 +347,6 @@ describe("the rerun line", () => {
     expect(second.stdout).toContain(`rerun: ${rerun}\n`);
   });
 });
-
-/** Growing fast, flat, growing slowly, and too few views to judge. */
-function fourBaskets() {
-  return twoTopicsInTwoEditions()
-    .article("uk", "Астрономія", linear(2_000, 6_000))
-    .article("pl", "Astronomia", () => 5_000)
-    .article("uk", "Фізика", linear(3_000, 4_000))
-    .article("pl", "Fizyka", () => 50);
-}
 
 describe("ranking", () => {
   test("ranks Baskets with high or medium Confidence by Growth, and lists the rest as not enough evidence", async () => {

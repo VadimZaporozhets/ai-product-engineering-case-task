@@ -16,5 +16,9 @@
     "@types/node": "22.20.4",
     "typescript": "5.9.3",
     "vitest": "5.0.2"
+  },
+  "dependencies": {
+    "vega": "6.4.0",
+    "vega-lite": "6.4.3"
   }
 }
