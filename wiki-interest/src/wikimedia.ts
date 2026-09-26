@@ -1,14 +1,11 @@
 // Client for Wikidata and the Wikimedia pageviews API.
 // Traffic filters are fixed (spec "Data fetching"): human readers only, all access types.
 
-import packageJson from "../package.json" with { type: "json" };
+import { RequestFailed, type Http } from "./http.ts";
 import { daysInMonth, monthRange } from "./months.ts";
-
-export type Fetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 const WIKIDATA_API = "https://www.wikidata.org/w/api.php";
 const PAGEVIEWS_API = "https://wikimedia.org/api/rest_v1/metrics/pageviews";
-const USER_AGENT = `wiki-interest/${packageJson.version} (Agent Skill)`;
 
 /** The most results Wikidata's search gives in one request. */
 const MAX_SEARCH_RESULTS = 50;
@@ -35,12 +32,9 @@ export type SearchHit = {
 /** Daily figures for one Article, by "YYYY-MM-DD". Days the API leaves out are absent from the map. */
 export type DailyViews = Map<string, number>;
 
-export class RequestFailed extends Error {}
-
 /** Wikidata items whose label or alias matches a name, best match first. */
-export async function searchItems(fetch: Fetch, name: string, language: string): Promise<SearchHit[]> {
-  const body = (await getJson(
-    fetch,
+export async function searchItems(http: Http, name: string, language: string): Promise<SearchHit[]> {
+  const body = (await http.getJson(
     wikidataUrl({ action: "wbsearchentities", search: name, language, type: "item", limit: String(MAX_SEARCH_RESULTS) }),
   )) as WbSearchEntities;
   return (body.search ?? []).map((hit) => ({
@@ -53,7 +47,7 @@ export async function searchItems(fetch: Fetch, name: string, language: string):
  * Looks up Wikidata items in one request (at most 50, the API's limit), with labels and descriptions in the given
  * languages. Items that don't exist are absent from the result.
  */
-export async function fetchItems(fetch: Fetch, ids: string[], languages: string[]): Promise<Map<string, WikidataItem>> {
+export async function fetchItems(http: Http, ids: string[], languages: string[]): Promise<Map<string, WikidataItem>> {
   const items = new Map<string, WikidataItem>();
   if (ids.length === 0) return items;
   // Wikidata drops language codes it doesn't know (e.g. the Edition code "simple"), so Edition codes can be passed
@@ -64,7 +58,7 @@ export async function fetchItems(fetch: Fetch, ids: string[], languages: string[
     props: "labels|descriptions|sitelinks/urls",
     languages: languages.join("|"),
   });
-  const body = (await getJson(fetch, url)) as WbGetEntities;
+  const body = (await http.getJson(url)) as WbGetEntities;
   for (const id of ids) {
     const entity = body.entities?.[id];
     if (!entity || "missing" in entity) continue;
@@ -80,13 +74,13 @@ export async function fetchItems(fetch: Fetch, ids: string[], languages: string[
   return items;
 }
 
-export async function isDisambiguationPage(fetch: Fetch, id: string): Promise<boolean> {
-  const body = (await getJson(fetch, wikidataUrl({ action: "wbgetclaims", entity: id, property: "P31" }))) as WbGetClaims;
+export async function isDisambiguationPage(http: Http, id: string): Promise<boolean> {
+  const body = (await http.getJson(wikidataUrl({ action: "wbgetclaims", entity: id, property: "P31" }))) as WbGetClaims;
   return (body.claims?.P31 ?? []).some((claim) => claim.mainsnak?.datavalue?.value?.id === DISAMBIGUATION_PAGE);
 }
 
 /** Titles of the top Articles a Wikipedia Edition's own search finds for a term. */
-export async function searchArticles(fetch: Fetch, edition: string, term: string, limit: number): Promise<string[]> {
+export async function searchArticles(http: Http, edition: string, term: string, limit: number): Promise<string[]> {
   const url = apiUrl(`https://${project(edition)}/w/api.php`, {
     action: "query",
     list: "search",
@@ -95,13 +89,13 @@ export async function searchArticles(fetch: Fetch, edition: string, term: string
     srlimit: String(limit),
     srprop: "",
   });
-  const body = (await getJson(fetch, url)) as SearchResults;
+  const body = (await http.getJson(url)) as SearchResults;
   return (body.query?.search ?? []).map((result) => result.title);
 }
 
 /** Daily human views of an Article over whole months. */
 export async function fetchArticleViews(
-  fetch: Fetch,
+  http: Http,
   edition: string,
   title: string,
   start: string,
@@ -109,7 +103,7 @@ export async function fetchArticleViews(
 ): Promise<DailyViews> {
   const article = encodeURIComponent(title.replaceAll(" ", "_"));
   const url = `${PAGEVIEWS_API}/per-article/${project(edition)}/all-access/user/${article}/daily/${firstDay(start)}/${lastDay(end)}`;
-  const body = (await getJson(fetch, url, { notFoundIsEmpty: true })) as PageviewItems;
+  const body = (await http.getJson(url, { notFoundIsEmpty: true })) as PageviewItems;
   const daily: DailyViews = new Map();
   for (const item of body.items ?? []) daily.set(dayOfTimestamp(item.timestamp), item.views);
   return daily;
@@ -120,13 +114,13 @@ export async function fetchArticleViews(
  * totals at all for it, which means the Edition code is unknown.
  */
 export async function fetchEditionTotals(
-  fetch: Fetch,
+  http: Http,
   edition: string,
   start: string,
   end: string,
 ): Promise<Map<string, number> | undefined> {
   const url = `${PAGEVIEWS_API}/aggregate/${project(edition)}/all-access/user/monthly/${firstDay(start)}/${lastDay(end)}`;
-  const body = (await getJson(fetch, url, { notFoundIsEmpty: true })) as PageviewItems;
+  const body = (await http.getJson(url, { notFoundIsEmpty: true })) as PageviewItems;
   if (!body.items?.length) return undefined;
   const totals = new Map<string, number>();
   for (const item of body.items) {
@@ -137,22 +131,6 @@ export async function fetchEditionTotals(
     throw new RequestFailed(`Wikimedia has no total views for ${edition} Wikipedia in ${missing.join(", ")}`);
   }
   return totals;
-}
-
-async function getJson(fetch: Fetch, url: string | URL, options: { notFoundIsEmpty?: boolean } = {}) {
-  let response: Response;
-  try {
-    response = await fetch(url, { headers: { "user-agent": USER_AGENT, accept: "application/json" } });
-  } catch (error) {
-    throw new RequestFailed(`request to ${new URL(url).hostname} failed: ${(error as Error).message}`);
-  }
-  if (response.status === 404 && options.notFoundIsEmpty) return {};
-  if (!response.ok) throw new RequestFailed(`${new URL(url).hostname} answered HTTP ${response.status}`);
-  try {
-    return await response.json();
-  } catch (error) {
-    throw new RequestFailed(`${new URL(url).hostname} sent an unreadable answer: ${(error as Error).message}`);
-  }
 }
 
 function wikidataUrl(parameters: Record<string, string>): URL {

@@ -2,6 +2,7 @@
   "name": "wiki-interest",
   "version": "0.1.0",
   "private": true,
+  "homepage": "https://github.com/VadimZaporozhets/ai-product-engineering-case-task",
   "description": "Agent Skill: research interest in topics across Wikipedia language editions from Wikimedia pageviews.",
   "type": "module",
   "engines": {

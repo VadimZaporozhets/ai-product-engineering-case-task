@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.ts";
+import { createHttp, RequestFailed, type Fetch, type Http } from "./http.ts";
 import { signedPercent } from "./format.ts";
 import { measureBasket, type Metrics, type MonthRow } from "./metrics.ts";
 import { monthRange } from "./months.ts";
@@ -20,16 +21,13 @@ import {
   type Candidate,
   type NameSearch,
 } from "./resolve.ts";
+import { pageviewCache } from "./pageview-cache.ts";
 import { createRunFolder, writeRunJson } from "./run-files.ts";
 import { judge, missingArticleVerdict, type Verdict } from "./verdict.ts";
 import { resolveWindow, type Window } from "./window.ts";
 import {
-  fetchArticleViews,
-  fetchEditionTotals,
   fetchItems,
   project,
-  RequestFailed,
-  type Fetch,
   type WikidataItem,
 } from "./wikimedia.ts";
 
@@ -38,8 +36,12 @@ export { EXIT_CODES } from "./exit-codes.ts";
 export type Dependencies = {
   fetch: Fetch;
   now: () => Date;
+  /** Waits between attempts of a failed request. */
+  sleep: (ms: number) => Promise<void>;
   /** Where fetched pageviews are cached between Runs. */
   cacheDir: string;
+  /** Replaces the default User-Agent, which names the skill, its version and the repository URL. */
+  userAgent?: string;
   /** Where Run folders are created; the user's working directory in production. */
   outputDir: string;
   stdout: { write(chunk: string): unknown };
@@ -51,8 +53,9 @@ const DEFAULT_NAME_LANGUAGE = "en";
 
 export async function main(argv: string[], deps: Dependencies): Promise<ExitCode> {
   const [command, ...rest] = argv;
-  if (command === "analyze") return analyze(rest, deps);
-  if (command === "resolve") return resolve(rest, deps);
+  const http = createHttp(deps);
+  if (command === "analyze") return analyze(rest, deps, http);
+  if (command === "resolve") return resolve(rest, deps, http);
   return blocked(deps, `unknown command "${command ?? ""}". Usage: ${USAGE}`);
 }
 
@@ -60,8 +63,10 @@ export async function runFromProcess(): Promise<void> {
   process.exitCode = await main(process.argv.slice(2), {
     fetch: globalThis.fetch,
     now: () => new Date(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     cacheDir: join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "wiki-interest"),
     outputDir: process.cwd(),
+    userAgent: process.env.WIKI_INTEREST_USER_AGENT || undefined,
     stdout: process.stdout,
   });
 }
@@ -88,7 +93,7 @@ type Basket = {
 /** A Topic turned into a Wikidata item, with the name search behind it when it was given by name. */
 type Resolved = { topic: string; item: WikidataItem; search?: NameSearch };
 
-async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
+async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<ExitCode> {
   const parsed = parseOptions(argv, ["topics", "editions", "name-lang", "months", "end"], ANALYZE_USAGE);
   if ("error" in parsed) return blocked(deps, parsed.error);
   const options = parsed.options;
@@ -105,13 +110,18 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
   const resolvedWindow = resolveWindow(options, now);
   if ("error" in resolvedWindow) return blocked(deps, resolvedWindow.error);
   const { window } = resolvedWindow;
+  const pageviews = pageviewCache(http, deps.cacheDir, now);
 
   // Edition totals come first: an Edition without any is an unknown code, refused before any other request.
+  const fetchedTotals = await Promise.all(
+    editions.map(async (edition) => {
+      const context = `total views of ${edition} Wikipedia`;
+      return [edition, await settle(pageviews.editionTotals(edition, window.start, window.end), context)] as const;
+    }),
+  );
   const totals = new Map<string, Map<string, number> | RequestFailed>();
   const unknownEditions = [];
-  for (const edition of editions) {
-    const context = `total views of ${edition} Wikipedia`;
-    const editionTotals = await settle(fetchEditionTotals(deps.fetch, edition, window.start, window.end), context);
+  for (const [edition, editionTotals] of fetchedTotals) {
     if (editionTotals === undefined) unknownEditions.push(edition);
     else totals.set(edition, editionTotals);
   }
@@ -126,7 +136,7 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
 
   // Topics given as item ids are looked up together, in one request.
   const itemIds = topics.filter(isItemId);
-  const items = await lookupItems(deps, itemIds, labelLanguages);
+  const items = await lookupItems(http, itemIds, labelLanguages);
   const unknownItem = items instanceof RequestFailed ? undefined : itemIds.find((id) => !items.has(id));
   if (unknownItem) return blocked(deps, noSuchItem(unknownItem));
   const resolutions = new Map<string, Resolved | RequestFailed>();
@@ -137,7 +147,7 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
       continue;
     }
     const search = await settle(
-      searchName(deps.fetch, topic, { language: nameLanguage, labelLanguages }),
+      searchName(http, topic, { language: nameLanguage, labelLanguages }),
       `Wikidata search for "${topic}" failed`,
     );
     if (search instanceof RequestFailed) resolutions.set(topic, search);
@@ -159,7 +169,35 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
   }
 
   const months = monthRange(window.start, window.end);
-  const baskets: Basket[] = [];
+  const basketFor = async (topic: string, resolution: Resolved | RequestFailed, edition: string): Promise<Basket> => {
+    if (resolution instanceof RequestFailed) {
+      return { topic, edition, articles: [], monthly: [], error: resolution.message };
+    }
+    const { item } = resolution;
+    const title = item.articles[edition];
+    if (title === undefined) {
+      // A Missing article is a finding: it's reported with what the Edition's search finds, never substituted.
+      const term = item.labels[edition] ?? (isItemId(topic) ? (labelOf(item, nameLanguage) ?? topic) : topic);
+      const found = await settle(missingArticleCandidates(http, edition, term), `search of ${edition} Wikipedia`);
+      return {
+        topic: item.id,
+        edition,
+        articles: [],
+        missingArticle: found instanceof RequestFailed ? { searchError: found.message } : { candidates: found },
+        monthly: [],
+        verdict: missingArticleVerdict(edition),
+      };
+    }
+    const basket: Basket = { topic: item.id, edition, articles: [title], monthly: [] };
+    const editionTotals = totals.get(edition)!;
+    if (editionTotals instanceof RequestFailed) return { ...basket, error: editionTotals.message };
+    const views = await settle(pageviews.articleViews(edition, title, window.start, window.end), `pageviews of ${title}`);
+    if (views instanceof RequestFailed) return { ...basket, error: views.message };
+    const { monthly, metrics } = measureBasket(months, [{ title, daily: views }], editionTotals);
+    return { ...basket, monthly, metrics, verdict: judge(metrics, window) };
+  };
+  // Every Basket's requests are started together; the HTTP client keeps them within Wikimedia's limits.
+  const pending: Promise<Basket>[] = [];
   const analysedItems = new Set<string>();
   for (const topic of topics) {
     const resolution = resolutions.get(topic)!;
@@ -168,44 +206,9 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
       if (analysedItems.has(resolution.item.id)) continue;
       analysedItems.add(resolution.item.id);
     }
-    for (const edition of editions) {
-      if (resolution instanceof RequestFailed) {
-        baskets.push({ topic, edition, articles: [], monthly: [], error: resolution.message });
-        continue;
-      }
-      const { item } = resolution;
-      const title = item.articles[edition];
-      if (title === undefined) {
-        // A Missing article is a finding: it's reported with what the Edition's search finds, never substituted.
-        const term = item.labels[edition] ?? (isItemId(topic) ? (labelOf(item, nameLanguage) ?? topic) : topic);
-        const found = await settle(missingArticleCandidates(deps.fetch, edition, term), `search of ${edition} Wikipedia`);
-        baskets.push({
-          topic: item.id,
-          edition,
-          articles: [],
-          missingArticle: found instanceof RequestFailed ? { searchError: found.message } : { candidates: found },
-          monthly: [],
-          verdict: missingArticleVerdict(edition),
-        });
-        continue;
-      }
-      const basket: Basket = { topic: item.id, edition, articles: [title], monthly: [] };
-      baskets.push(basket);
-      const editionTotals = totals.get(edition)!;
-      if (editionTotals instanceof RequestFailed) {
-        basket.error = editionTotals.message;
-        continue;
-      }
-      const request = fetchArticleViews(deps.fetch, edition, title, window.start, window.end);
-      const views = await settle(request, `pageviews of ${title}`);
-      if (views instanceof RequestFailed) {
-        basket.error = views.message;
-        continue;
-      }
-      const { monthly, metrics } = measureBasket(months, [{ title, daily: views }], editionTotals);
-      Object.assign(basket, { monthly, metrics, verdict: judge(metrics, window) });
-    }
+    for (const edition of editions) pending.push(basketFor(topic, resolution, edition));
   }
+  const baskets = await Promise.all(pending);
 
   const resolvedTopics = [...resolutions.values()].filter(
     (resolution): resolution is Resolved => !(resolution instanceof RequestFailed),
@@ -268,7 +271,7 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
 }
 
 /** Lists the candidate meanings of a Topic name and the Article each links in the given Editions. */
-async function resolve(argv: string[], deps: Dependencies): Promise<ExitCode> {
+async function resolve(argv: string[], deps: Dependencies, http: Http): Promise<ExitCode> {
   const parsed = parseOptions(argv, ["topic", "editions", "name-lang"], RESOLVE_USAGE);
   if ("error" in parsed) return blocked(deps, parsed.error);
   const { options } = parsed;
@@ -287,7 +290,7 @@ async function resolve(argv: string[], deps: Dependencies): Promise<ExitCode> {
   ];
 
   if (isItemId(topic)) {
-    const items = await lookupItems(deps, [topic], labelLanguages);
+    const items = await lookupItems(http, [topic], labelLanguages);
     if (items instanceof RequestFailed) return failed(deps, items);
     const item = items.get(topic);
     if (!item) return blocked(deps, noSuchItem(topic));
@@ -296,7 +299,7 @@ async function resolve(argv: string[], deps: Dependencies): Promise<ExitCode> {
   }
 
   const search = await settle(
-    searchName(deps.fetch, topic, { language: nameLanguage, labelLanguages, listAll: true }),
+    searchName(http, topic, { language: nameLanguage, labelLanguages, listAll: true }),
     `Wikidata search for "${topic}" failed`,
   );
   if (search instanceof RequestFailed) return failed(deps, search);
@@ -498,11 +501,11 @@ function nameLangOption(nameLanguage: string): string {
 
 /** Looks up Topics given as Wikidata item ids; ids that don't exist are absent from the result. */
 function lookupItems(
-  deps: Dependencies,
+  http: Http,
   ids: string[],
   labelLanguages: string[],
 ): Promise<Map<string, WikidataItem> | RequestFailed> {
-  return settle(fetchItems(deps.fetch, ids, labelLanguages), "Wikidata lookup failed");
+  return settle(fetchItems(http, ids, labelLanguages), "Wikidata lookup failed");
 }
 
 function noSuchItem(id: string): string {
