@@ -14,7 +14,25 @@ The skill itself is the [`wiki-interest/`](wiki-interest/) folder. Everything it
 - npm
 - Network access to `wikimedia.org` and `wikidata.org`
 
-_TBD: exact install commands for Claude Code and other agents that support Agent Skills._
+Install for Claude Code by copying the skill folder into your skills directory and installing its dependencies (without dev tooling):
+
+```sh
+mkdir -p ~/.claude/skills
+cp -R wiki-interest ~/.claude/skills/
+npm ci --omit=dev --prefix ~/.claude/skills/wiki-interest
+```
+
+For a single project, use `<project>/.claude/skills/wiki-interest` instead. Other agents that support Agent Skills load the same folder from their own skills directory.
+
+If Node is too old or the dependencies are missing, the skill prints the exact fix and exits. It never installs anything by itself.
+
+Try it without an agent:
+
+```sh
+node ~/.claude/skills/wiki-interest/scripts/wiki-interest.js analyze --topics Q333 --editions uk
+```
+
+Exit codes: `0` the Run completed; `2` the Run completed but some requests failed (those rows are marked `error:`); `3` the Run was blocked (invalid input, or a Topic that can't be analysed as asked); `4` setup error (Node or dependencies). `1` is left to Node for unexpected crashes.
 
 ## How it works
 
