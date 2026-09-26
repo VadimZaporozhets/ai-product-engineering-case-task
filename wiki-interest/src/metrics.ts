@@ -53,20 +53,34 @@ export function measureBasket(
   articles: ArticleViews[],
   editionTotals: Map<string, number>,
 ): { monthly: MonthRow[]; metrics: Metrics } {
+  const [, secondHalf] = splitHalves(months);
   const perArticle = articles.map((article) => {
     const monthly = monthlyViews(article.daily);
-    const first = [...monthly.keys()].sort()[0] ?? null;
-    return { title: article.title, monthly, first };
+    return { title: article.title, monthly, first: firstMonth(monthly, secondHalf) };
   });
   const firstMonths = perArticle.map(({ title, first }) => ({ article: title, month: first }));
-  // An Article has data from its first month with views on; later months without views count as zero.
-  const rows = months.map((month) => ({
-    month,
-    views: perArticle.reduce((total, article) => total + (article.monthly.get(month) ?? 0), 0),
-    editionViews: editionTotals.get(month)!,
-    hasData: perArticle.some((article) => article.first !== null && article.first <= month),
-  }));
+  // An Article has data from its first month on; later months without views count as zero.
+  const rows = months.map((month) => {
+    const started = perArticle.filter((article) => article.first !== null && article.first <= month);
+    return {
+      month,
+      views: started.reduce((total, article) => total + (article.monthly.get(month) ?? 0), 0),
+      editionViews: editionTotals.get(month)!,
+      hasData: started.length > 0,
+    };
+  });
   return { monthly: rows, metrics: computeMetrics(rows, articles, firstMonths) };
+}
+
+/**
+ * An Article's first month with data: the first month with at least `minHistoryShare` of its median monthly views
+ * over the second half of the Window, months without views counting as zero (its current level, which a spike
+ * month can't move). When that median is zero, its first month with any views.
+ */
+function firstMonth(monthly: Map<string, number>, secondHalf: string[]): string | null {
+  const secondHalfViews = secondHalf.map((month) => monthly.get(month) ?? 0);
+  const minViews = secondHalfViews.length > 0 ? median(secondHalfViews) * THRESHOLDS.minHistoryShare : 0;
+  return [...monthly].filter(([, views]) => views >= minViews).map(([month]) => month).sort()[0] ?? null;
 }
 
 /** A Window's months, split into its first and second half. For an odd number, the middle month belongs to neither. */

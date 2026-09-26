@@ -7,6 +7,12 @@ export const THRESHOLDS = {
   flatBand: 0.1,
   /** Enough data: each half of the Window needs data in at least this fraction of its months. */
   minHalfCoverage: 0.5,
+  /**
+   * Enough data and Full history: an Article's data starts at its first month with at least this fraction of its
+   * median monthly views over the Window's second half. Earlier months, such as a redirect's trickle before the
+   * Article was created on that title, count as no data.
+   */
+  minHistoryShare: 0.05,
   /** Enough data: median monthly views under this give Confidence `insufficient`. */
   minMedianViews: 100,
   /** Volume: median monthly views under this fail the Check. */
