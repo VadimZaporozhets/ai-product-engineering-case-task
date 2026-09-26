@@ -1,20 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { EXIT_CODES } from "../src/cli.ts";
-import { monthsFrom } from "../src/months.ts";
 import type { CheckName, Confidence, Direction } from "../src/verdict.ts";
-import { astronomyInUkrainian, run, runJson } from "./run-cli.ts";
+import { astronomyInUkrainian, EDITION_VIEWS, linear, run, runJson, WINDOW_24 } from "./run-cli.ts";
 
-// The default Window on 2026-09-26 is 2024-09..2026-08; a 6-month Window is 2026-03..2026-08.
-const WINDOW_24 = { start: "2024-09", months: 24 };
+// A 6-month Window on 2026-09-26 is 2026-03..2026-08.
 const WINDOW_6 = { start: "2026-03", months: 6 };
-const EDITION_VIEWS = 100_000_000;
 
 type Series = (month: string) => number | undefined;
-
-/** Views on a straight line from `from` in the Window's first month to `to` in its last, rounded. */
-function linear(from: number, to: number, window: { start: string; months: number }) {
-  return (month: string) => Math.round(from + ((to - from) * monthsFrom(window.start, month)) / (window.months - 1));
-}
 
 async function analyze(
   views: Series,

@@ -22,14 +22,18 @@ import {
   type NameSearch,
 } from "./resolve.ts";
 import { pageviewCache } from "./pageview-cache.ts";
+import {
+  DEFAULT_RANKING,
+  isRankingCriterion,
+  rank,
+  RANKING_CRITERIA,
+  rankingHeading,
+  type RankingCriterion,
+} from "./ranking.ts";
 import { createRunFolder, writeRunJson } from "./run-files.ts";
 import { judge, missingArticleVerdict, type Verdict } from "./verdict.ts";
 import { resolveWindow, type Window } from "./window.ts";
-import {
-  fetchItems,
-  project,
-  type WikidataItem,
-} from "./wikimedia.ts";
+import { fetchItems, lookupArticle, project, type WikidataItem } from "./wikimedia.ts";
 
 export { EXIT_CODES } from "./exit-codes.ts";
 
@@ -50,6 +54,9 @@ export type Dependencies = {
 const ENTRY_SCRIPT = fileURLToPath(new URL("../scripts/wiki-interest.js", import.meta.url));
 const COMMAND = `node ${shellQuote(ENTRY_SCRIPT)}`;
 const DEFAULT_NAME_LANGUAGE = "en";
+/** Run size limit: larger questions are split into several Runs, so the output stays small enough to read. */
+const MAX_TOPICS = 5;
+const MAX_EDITIONS = 10;
 
 export async function main(argv: string[], deps: Dependencies): Promise<ExitCode> {
   const [command, ...rest] = argv;
@@ -73,7 +80,8 @@ export async function runFromProcess(): Promise<void> {
 
 const ANALYZE_USAGE =
   "analyze --topics <Topic names or Wikidata item ids> --editions <edition codes> [--name-lang <language code>] " +
-  "[--months <count>] [--end <YYYY-MM>]";
+  "[--months <count>] [--end <YYYY-MM>] [--rank growth|interest|share] " +
+  "[--add-article <Topic>:<edition code>:<Article title>]...";
 const RESOLVE_USAGE = "resolve --topic <Topic name> [--name-lang <language code>] [--editions <edition codes>]";
 const USAGE = `${ANALYZE_USAGE}, or ${RESOLVE_USAGE}`;
 
@@ -81,7 +89,10 @@ type Basket = {
   /** The Wikidata item id, or the Topic as given when it couldn't be resolved. */
   topic: string;
   edition: string;
+  /** Every Article measured: the one linked from the Wikidata item, if any, then those chosen by the agent. */
   articles: string[];
+  /** The Articles the agent added with --add-article, rather than linked from the Wikidata item. */
+  chosenByAgent: string[];
   /** Set when the Edition has no Article linked to the item: what its search found instead, never analysed. */
   missingArticle?: { candidates: string[] } | { searchError: string };
   monthly: MonthRow[];
@@ -93,8 +104,26 @@ type Basket = {
 /** A Topic turned into a Wikidata item, with the name search behind it when it was given by name. */
 type Resolved = { topic: string; item: WikidataItem; search?: NameSearch };
 
+/** What an analyze command asks for, once its arguments are checked. */
+type Request = {
+  topics: string[];
+  editions: string[];
+  nameLanguage: string;
+  window: Window;
+  ranking: RankingCriterion;
+  extraArticles: ExtraArticle[];
+};
+
+/** An Article the agent adds to the Basket of one Topic in one Edition. */
+type ExtraArticle = { topic: string; edition: string; title: string };
+
 async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<ExitCode> {
-  const parsed = parseOptions(argv, ["topics", "editions", "name-lang", "months", "end"], ANALYZE_USAGE);
+  const parsed = parseOptions(
+    argv,
+    ["topics", "editions", "name-lang", "months", "end", "rank"],
+    ANALYZE_USAGE,
+    ["add-article"],
+  );
   if ("error" in parsed) return blocked(deps, parsed.error);
   const options = parsed.options;
   const topics = splitList(options.topics);
@@ -110,6 +139,14 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
   const resolvedWindow = resolveWindow(options, now);
   if ("error" in resolvedWindow) return blocked(deps, resolvedWindow.error);
   const { window } = resolvedWindow;
+  const ranking = options.rank ?? DEFAULT_RANKING;
+  if (!isRankingCriterion(ranking)) {
+    return blocked(deps, `--rank must be ${orList(RANKING_CRITERIA)}, not "${ranking}".`);
+  }
+  const extras = parseExtraArticles(options["add-article"] ?? [], topics, editions);
+  if ("error" in extras) return blocked(deps, extras.error);
+  const request: Request = { topics, editions, nameLanguage, window, ranking, extraArticles: extras.extraArticles };
+  if (topics.length > MAX_TOPICS || editions.length > MAX_EDITIONS) return blockedTooLarge(deps, request);
   const pageviews = pageviewCache(http, deps.cacheDir, now);
 
   // Edition totals come first: an Edition without any is an unknown code, refused before any other request.
@@ -157,43 +194,63 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
   if (ambiguous.length > 0) {
     // A placeholder rather than the first candidate, so the command can't run until someone picks a meaning.
     // A Topic whose search failed keeps its name, so the re-run searches it again.
-    const suggested = topics.map((topic) => {
+    const suggested = (topic: string) => {
       const resolution = resolutions.get(topic);
       if (resolution instanceof RequestFailed) return topic;
       return resolvedId(resolution) ?? "<item id>";
-    });
+    };
     const searchErrors = [...resolutions.values()].filter((resolution) => resolution instanceof RequestFailed);
     const pickable = ambiguous.every((search) => search.candidates.length > 0);
-    const command = pickable ? analyzeCommand(suggested, editions, window, nameLanguage) : undefined;
+    const command = pickable ? analyzeCommand(request, suggested) : undefined;
     return blockedAmbiguous(deps, ambiguous, searchErrors, command);
   }
 
+  const idOf = (topic: string) => resolvedId(resolutions.get(topic)) ?? topic;
   const months = monthRange(window.start, window.end);
   const basketFor = async (topic: string, resolution: Resolved | RequestFailed, edition: string): Promise<Basket> => {
     if (resolution instanceof RequestFailed) {
-      return { topic, edition, articles: [], monthly: [], error: resolution.message };
+      return { topic, edition, articles: [], chosenByAgent: [], monthly: [], error: resolution.message };
     }
     const { item } = resolution;
-    const title = item.articles[edition];
-    if (title === undefined) {
+    const linked = item.articles[edition];
+    const basketOf = (chosen: string[]): Basket => {
+      // Titles written differently can name the same Article ("foo" and "Foo").
+      const chosenByAgent = unique(chosen).filter((title) => title !== linked);
+      const articles = linked === undefined ? chosenByAgent : [linked, ...chosenByAgent];
+      return { topic: item.id, edition, articles, chosenByAgent, monthly: [] };
+    };
+    // Every Topic that resolved to this item, by name or by id, adds to its Baskets.
+    const added = unique(
+      request.extraArticles
+        .filter((extra) => extra.edition === edition && idOf(extra.topic) === item.id)
+        .map((extra) => extra.title),
+    );
+    if (linked === undefined && added.length === 0) {
       // A Missing article is a finding: it's reported with what the Edition's search finds, never substituted.
       const term = item.labels[edition] ?? (isItemId(topic) ? (labelOf(item, nameLanguage) ?? topic) : topic);
       const found = await settle(missingArticleCandidates(http, edition, term), `search of ${edition} Wikipedia`);
       return {
-        topic: item.id,
-        edition,
-        articles: [],
+        ...basketOf([]),
         missingArticle: found instanceof RequestFailed ? { searchError: found.message } : { candidates: found },
-        monthly: [],
         verdict: missingArticleVerdict(edition),
       };
     }
-    const basket: Basket = { topic: item.id, edition, articles: [title], monthly: [] };
     const editionTotals = totals.get(edition)!;
-    if (editionTotals instanceof RequestFailed) return { ...basket, error: editionTotals.message };
-    const views = await settle(pageviews.articleViews(edition, title, window.start, window.end), `pageviews of ${title}`);
-    if (views instanceof RequestFailed) return { ...basket, error: views.message };
-    const { monthly, metrics } = measureBasket(months, [{ title, daily: views }], editionTotals);
+    if (editionTotals instanceof RequestFailed) return { ...basketOf(added), error: editionTotals.message };
+    const checked = await checkAddedArticles(http, edition, added);
+    if ("error" in checked) return { ...basketOf(added), error: checked.error };
+    const basket = basketOf(checked.titles);
+    const fetched = await Promise.all(
+      basket.articles.map((title) =>
+        settle(pageviews.articleViews(edition, title, window.start, window.end), `pageviews of ${title}`),
+      ),
+    );
+    const articles = [];
+    for (const [index, daily] of fetched.entries()) {
+      if (daily instanceof RequestFailed) return { ...basket, error: daily.message };
+      articles.push({ title: basket.articles[index]!, daily });
+    }
+    const { monthly, metrics } = measureBasket(months, articles, editionTotals);
     return { ...basket, monthly, metrics, verdict: judge(metrics, window) };
   };
   // Every Basket's requests are started together; the HTTP client keeps them within Wikimedia's limits.
@@ -218,18 +275,17 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
     (resolution, index) => resolvedTopics.findIndex((other) => other.item.id === resolution.item.id) === index,
   );
   const names = new Map(resolved.map(({ item }) => [item.id, labelOf(item, nameLanguage)]));
-  const rerun = analyzeCommand(
-    unique(topics.map((topic) => resolvedId(resolutions.get(topic)) ?? topic)),
-    editions,
-    window,
-    nameLanguage,
-  );
+  const rerun = analyzeCommand(request, idOf);
+  const { ranked, notEnoughEvidence } = rank(baskets, ranking);
+  // Reasons and next steps follow the tables' order.
+  const inTableOrder = [...ranked, ...notEnoughEvidence];
+  const keyOf = ({ topic, edition }: Basket) => ({ topic, edition });
   const folder = createRunFolder(deps.outputDir, now, rerun);
   const runFile = writeRunJson(folder.path, {
     id: folder.id,
     createdAt: now.toISOString(),
     rerun,
-    request: { topics, nameLanguage, editions, window },
+    request,
     resolution: resolvedTopics.map(({ topic, item, search }) => ({
       topic,
       id: item.id,
@@ -245,6 +301,11 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
       },
     })),
     baskets,
+    ranking: {
+      by: ranking,
+      ranked: ranked.map(keyOf),
+      notEnoughEvidence: notEnoughEvidence.map(keyOf),
+    },
   });
 
   const lines = [
@@ -254,12 +315,20 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
     "resolution:",
     ...resolved.flatMap((resolution) => resolutionLines(resolution, editions, baskets, nameLanguage)),
     "",
-    "| Topic | Edition | Direction | Confidence | Growth | Raw change | Median monthly views | Views per million |",
-    "|---|---|---|---|---|---|---|---|",
-    ...baskets.map((basket) => resultRow(basket, names)),
+    ...tableLines(rankingHeading(ranking), ranked, names, ranking),
     "",
-    ...reasonLines(baskets, names),
-    ...nextStepLines(resolvedTopics, baskets, editions, names, nameLanguage),
+    ...tableLines(
+      "not enough evidence (low or insufficient Confidence, Missing articles and errors; not ranked)",
+      notEnoughEvidence,
+      names,
+      ranking,
+    ),
+    "",
+    ...reasonLines(inTableOrder, names),
+    "",
+    ...CAVEAT_LINES,
+    "",
+    ...nextStepLines(resolvedTopics, inTableOrder, editions, names, nameLanguage),
     "",
     `run file: ${runFile}`,
   ];
@@ -362,6 +431,37 @@ function blockedAmbiguous(
   return EXIT_CODES.blocked;
 }
 
+/** Refuses a Run over the size limit, printing the smaller Runs it splits into, which share its Window. */
+function blockedTooLarge(deps: Dependencies, request: Request): ExitCode {
+  const over = [
+    request.topics.length > MAX_TOPICS ? `${request.topics.length} Topics` : undefined,
+    request.editions.length > MAX_EDITIONS ? `${request.editions.length} Editions` : undefined,
+  ].filter((part) => part !== undefined);
+  const commands = chunks(request.topics, MAX_TOPICS).flatMap((topics) =>
+    chunks(request.editions, MAX_EDITIONS).map((editions) => {
+      const extraArticles = request.extraArticles.filter(
+        (extra) => topics.includes(extra.topic) && editions.includes(extra.edition),
+      );
+      return analyzeCommand({ ...request, topics, editions, extraArticles });
+    }),
+  );
+  const lines = [
+    `blocked: a Run analyses at most ${MAX_TOPICS} Topics and ${MAX_EDITIONS} Editions, and this one asks for ` +
+      `${over.join(" and ")}. Ask the user which matter most, or split the question into these Runs, ` +
+      "which share one Window, and answer from all of their tables:",
+    ...commands.map((command) => `  ${COMMAND} ${command}`),
+  ];
+  deps.stdout.write(`${lines.join("\n")}\n`);
+  return EXIT_CODES.blocked;
+}
+
+/** Splits values into as few chunks of at most `size` as possible, as even in size as they can be. */
+function chunks<T>(values: T[], size: number): T[][] {
+  const count = Math.ceil(values.length / size);
+  const chunkSize = Math.ceil(values.length / count);
+  return Array.from({ length: count }, (_, i) => values.slice(i * chunkSize, (i + 1) * chunkSize));
+}
+
 function candidateLine({ item, articleCount }: Candidate, language: string): string {
   return `${itemName(item, language)} (${articleCount} Wikipedia ${articleCount === 1 ? "Article" : "Articles"})`;
 }
@@ -390,8 +490,14 @@ function resolutionLines(resolution: Resolved, editions: string[], baskets: Bask
   for (const edition of editions) {
     const basket = baskets.find((candidate) => candidate.topic === item.id && candidate.edition === edition);
     const missing = basket?.missingArticle;
+    const linked = item.articles[edition];
+    const chosen = (basket?.chosenByAgent ?? []).map((title) => `${title} (chosen by the agent)`);
     if (!missing) {
-      lines.push(`    ${edition}: ${item.articles[edition]}`);
+      lines.push(
+        linked === undefined
+          ? `    ${edition}: no Article is linked to ${item.id}; the Basket is ${chosen.join(" + ")}`
+          : `    ${edition}: ${[linked, ...chosen].join(" + ")}`,
+      );
     } else if ("searchError" in missing) {
       lines.push(`    ${edition}: Missing article; the search for candidates failed: ${missing.searchError}`);
     } else {
@@ -422,15 +528,34 @@ function nextStepLines(
     );
   }
   for (const basket of baskets) {
-    if (!basket.missingArticle) continue;
-    steps.push(
-      `  - ${topicName(basket, names)} has no Article in ${basket.edition} Wikipedia. Tell the user: this is a finding ` +
-        `about how little ${basket.edition} Wikipedia covers the Topic. The search candidates may be unrelated; ` +
-        "never analyse one in its place unless the user picks it.",
-    );
+    if (basket.error) {
+      steps.push(
+        `  - ${topicName(basket, names)} in ${basket.edition} failed: ${basket.error}. Answer from the other rows and ` +
+          "tell the user what failed. If the reason is about an --add-article, correct or drop that option in the " +
+          "rerun: line; otherwise run the rerun: line again later (months already fetched come from the cache).",
+      );
+    } else if (basket.missingArticle) {
+      steps.push(
+        `  - ${topicName(basket, names)} has no Article in ${basket.edition} Wikipedia. Tell the user: this is a finding ` +
+          `about how little ${basket.edition} Wikipedia covers the Topic. The search candidates may be unrelated; ` +
+          "never analyse one in its place unless the user picks it. If they do, add it to the rerun: line as " +
+          `--add-article '${basket.topic}:${basket.edition}:<Article title>'.`,
+      );
+    }
   }
-  return steps.length === 0 ? [] : ["", "next steps:", ...steps];
+  steps.push(
+    "  - For a follow-up (another Edition or Topic, a longer Window, another ranking), edit the rerun: line and run it " +
+      "again; months already fetched come from the cache.",
+  );
+  return ["next steps:", ...steps];
 }
+
+/** Limitations of the method that apply to every Run. */
+const CAVEAT_LINES = [
+  "caveats:",
+  "  - Interest is not willingness to pay: Wikipedia views show what people look up, not what they would buy.",
+  "  - An Edition is a language, not a country: its readers are everyone who reads that language, wherever they live.",
+];
 
 /** Waits for a request; a RequestFailed comes back as the value, its message prefixed with what was asked for. */
 async function settle<T>(request: Promise<T>, context: string): Promise<T | RequestFailed> {
@@ -442,13 +567,44 @@ async function settle<T>(request: Promise<T>, context: string): Promise<T | Requ
   }
 }
 
-function resultRow(basket: Basket, names: Map<string, string | undefined>): string {
+/** A heading, then a result table of the Baskets, or "none" on the heading's line when there are none. */
+function tableLines(
+  heading: string,
+  baskets: Basket[],
+  names: Map<string, string | undefined>,
+  ranking: RankingCriterion,
+): string[] {
+  if (baskets.length === 0) return [`${heading}: none`];
+  const perMillion = perMillionColumn(ranking);
+  return [
+    `${heading}:`,
+    `| Topic | Edition | Direction | Confidence | Growth | Raw change | Median monthly views | ${perMillion.heading} |`,
+    "|---|---|---|---|---|---|---|---|",
+    ...baskets.map((basket) => resultRow(basket, names, perMillion.value)),
+  ];
+}
+
+/**
+ * The views per million column. Ranked by share, it shows the second half's figure the ranking sorts by, so the
+ * column reads in rank order; otherwise the whole Window's.
+ */
+function perMillionColumn(ranking: RankingCriterion): { heading: string; value: (metrics: Metrics) => number | null } {
+  return ranking === "share"
+    ? { heading: "Views per million (2nd half)", value: (metrics) => metrics.halves.second.viewsPerMillion }
+    : { heading: "Views per million", value: (metrics) => metrics.viewsPerMillion };
+}
+
+function resultRow(
+  basket: Basket,
+  names: Map<string, string | undefined>,
+  perMillionOf: (metrics: Metrics) => number | null,
+): string {
   const topic = topicName(basket, names);
   const { metrics, verdict } = basket;
   if (basket.error || !verdict) return `| ${topic} | ${basket.edition} | error: ${basket.error} | | | | | |`;
   // A Basket judged without views (a Missing article) has no metrics: every figure is n/a.
   const median = metrics?.medianMonthlyViews ?? null;
-  const perMillion = metrics?.viewsPerMillion ?? null;
+  const perMillion = metrics ? perMillionOf(metrics) : null;
   const cells = [
     topic,
     basket.edition,
@@ -484,14 +640,85 @@ function resolvedId(resolution: Resolved | RequestFailed | undefined): string | 
   return resolution && !(resolution instanceof RequestFailed) ? resolution.item.id : undefined;
 }
 
-/** The analyze command for these Topics, with the Window spelled out so a re-run covers the same months. */
-function analyzeCommand(topics: string[], editions: string[], window: Window, nameLanguage: string): string {
+/**
+ * An analyze command, with the Window spelled out so a re-run covers the same months. `topicAs` rewrites each Topic,
+ * e.g. into its Wikidata item id, both in --topics and in --add-article.
+ */
+function analyzeCommand(request: Request, topicAs: (topic: string) => string = (topic) => topic): string {
+  const { editions, window, nameLanguage, ranking } = request;
+  // Topics that resolved to the same item are listed once; each "<item id>" placeholder stays, one per Topic to pick.
+  const topics = request.topics.map(topicAs).filter((topic, i, all) => !isItemId(topic) || all.indexOf(topic) === i);
   const hasNames = topics.some((topic) => !isItemId(topic));
+  const added = unique(request.extraArticles.map(({ topic, edition, title }) => `${topicAs(topic)}:${edition}:${title}`));
   return [
     `analyze --topics ${hasNames ? shellQuote(topics.join(",")) : topics.join(",")} --editions ${editions.join(",")}`,
     hasNames ? nameLangOption(nameLanguage) : "",
     ` --months ${window.months} --end ${window.end}`,
+    ranking === DEFAULT_RANKING ? "" : ` --rank ${ranking}`,
+    ...added.map((extra) => ` --add-article ${shellQuote(extra)}`),
   ].join("");
+}
+
+/**
+ * Reads each --add-article as <Topic>:<edition>:<Article title>. The Topic is written as in --topics, which is how
+ * it's told apart from a colon in a Topic name; the title keeps any colons after the edition.
+ */
+function parseExtraArticles(
+  values: string[],
+  topics: string[],
+  editions: string[],
+): { extraArticles: ExtraArticle[] } | { error: string } {
+  // The longest Topic first, so a Topic whose name starts with another Topic's is matched whole.
+  const byLength = [...topics].sort((a, b) => b.length - a.length);
+  const extraArticles: ExtraArticle[] = [];
+  for (const value of values) {
+    const topic = byLength.find((candidate) => value.startsWith(`${candidate}:`));
+    const [edition = "", ...rest] = topic === undefined ? [] : value.slice(topic.length + 1).split(":");
+    const title = rest.join(":").trim();
+    if (topic === undefined || title === "") {
+      return {
+        error:
+          `--add-article "${value}" must be <Topic>:<edition code>:<Article title>, with the Topic written as in ` +
+          `--topics (${topics.join(", ")}), e.g. --add-article '${topics[0]}:${editions[0]}:<Article title>'.`,
+      };
+    }
+    if (!editions.includes(edition)) {
+      return { error: `--add-article "${value}": "${edition}" isn't one of --editions (${editions.join(",")}).` };
+    }
+    extraArticles.push({ topic, edition, title });
+  }
+  return { extraArticles };
+}
+
+/**
+ * The titles of the Articles the agent added, as the Edition writes them, or why one of them can't be measured.
+ * Each is looked up, because the pageviews API answers a title that isn't an Article as one without views.
+ */
+async function checkAddedArticles(
+  http: Http,
+  edition: string,
+  titles: string[],
+): Promise<{ titles: string[] } | { error: string }> {
+  const checked = [];
+  for (const title of titles) {
+    const found = await settle(lookupArticle(http, edition, title), `lookup of "${title}" in ${edition} Wikipedia`);
+    if (found instanceof RequestFailed) return { error: found.message };
+    const added = `"${title}", added with --add-article,`;
+    if (found.kind === "missing") return { error: `${added} is not an Article of ${edition} Wikipedia` };
+    if (found.kind === "invalid") return { error: `${added} is not an Article title: ${found.reason}` };
+    if (found.kind === "redirect") {
+      return {
+        error: `${added} only redirects to "${found.target}" in ${edition} Wikipedia; add "${found.target}" instead`,
+      };
+    }
+    checked.push(found.title);
+  }
+  return { titles: checked };
+}
+
+/** "a, b or c". */
+function orList(values: readonly string[]): string {
+  return values.length === 1 ? values[0]! : `${values.slice(0, -1).join(", ")} or ${values.at(-1)}`;
 }
 
 /** The --name-lang option of a command, left out for the default name language. */
@@ -526,15 +753,21 @@ function failed(deps: Dependencies, error: RequestFailed): ExitCode {
   return EXIT_CODES.partialFailure;
 }
 
-/** Parses options that each take a string value. */
-function parseOptions<Name extends string>(
+/** Parses options that each take a string value, and those in `multiple` that can be given more than once. */
+function parseOptions<Name extends string, Multiple extends string = never>(
   argv: string[],
   names: Name[],
   usage: string,
-): { options: Partial<Record<Name, string>> } | { error: string } {
+  multiple: Multiple[] = [],
+): { options: Partial<Record<Name, string> & Record<Multiple, string[]>> } | { error: string } {
   try {
-    const options = Object.fromEntries(names.map((name) => [name, { type: "string" as const }]));
-    return { options: parseArgs({ args: argv, options }).values as Partial<Record<Name, string>> };
+    const options = Object.fromEntries([
+      ...names.map((name) => [name, { type: "string" as const }]),
+      ...multiple.map((name) => [name, { type: "string" as const, multiple: true }]),
+    ]);
+    return {
+      options: parseArgs({ args: argv, options }).values as Partial<Record<Name, string> & Record<Multiple, string[]>>,
+    };
   } catch (error) {
     return { error: `${(error as Error).message}. Usage: ${usage}` };
   }
