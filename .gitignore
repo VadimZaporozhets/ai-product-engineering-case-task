@@ -1,0 +1,15 @@
+# Local development material: planning, design docs, evals and agent config.
+# Kept on the developer's machine for defence prep; not part of the submission.
+CLAUDE.md
+CONTEXT.md
+docs/
+.scratch/
+evals/
+.claude/
+
+# Dependencies and generated output
+node_modules/
+wiki-interest-runs/
+
+# OS
+.DS_Store
