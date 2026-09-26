@@ -28,7 +28,15 @@ export function createRunFolder(outputDir: string, now: Date, command: string): 
 }
 
 export function writeRunJson(folder: string, run: unknown): string {
-  const path = join(folder, "run.json");
-  writeFileSync(path, `${JSON.stringify(run, null, 2)}\n`);
+  return writeRunFile(folder, "run.json", `${JSON.stringify(run, null, 2)}\n`);
+}
+
+export function writeChartSvg(folder: string, svg: string): string {
+  return writeRunFile(folder, "chart.svg", svg);
+}
+
+function writeRunFile(folder: string, name: string, content: string): string {
+  const path = join(folder, name);
+  writeFileSync(path, content);
   return path;
 }

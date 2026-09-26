@@ -30,7 +30,8 @@ import {
   rankingHeading,
   type RankingCriterion,
 } from "./ranking.ts";
-import { createRunFolder, writeRunJson } from "./run-files.ts";
+import { createRunFolder, writeChartSvg, writeRunJson } from "./run-files.ts";
+import { chooseLines, MAX_CHART_LINES, renderChart } from "./chart.ts";
 import { judge, missingArticleVerdict, type Verdict } from "./verdict.ts";
 import { resolveWindow, type Window } from "./window.ts";
 import { fetchItems, lookupArticle, project, type WikidataItem } from "./wikimedia.ts";
@@ -81,7 +82,7 @@ export async function runFromProcess(): Promise<void> {
 const ANALYZE_USAGE =
   "analyze --topics <Topic names or Wikidata item ids> --editions <edition codes> [--name-lang <language code>] " +
   "[--months <count>] [--end <YYYY-MM>] [--rank growth|interest|share] " +
-  "[--add-article <Topic>:<edition code>:<Article title>]...";
+  "[--add-article <Topic>:<edition code>:<Article title>]... [--highlight <Topic>:<edition code>]...";
 const RESOLVE_USAGE = "resolve --topic <Topic name> [--name-lang <language code>] [--editions <edition codes>]";
 const USAGE = `${ANALYZE_USAGE}, or ${RESOLVE_USAGE}`;
 
@@ -112,17 +113,22 @@ type Request = {
   window: Window;
   ranking: RankingCriterion;
   extraArticles: ExtraArticle[];
+  /** Baskets the chart always draws, whatever their row in the tables. */
+  highlights: BasketKey[];
 };
 
+/** A Basket named by its Topic, written as in --topics, and its Edition. */
+type BasketKey = { topic: string; edition: string };
+
 /** An Article the agent adds to the Basket of one Topic in one Edition. */
-type ExtraArticle = { topic: string; edition: string; title: string };
+type ExtraArticle = BasketKey & { title: string };
 
 async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<ExitCode> {
   const parsed = parseOptions(
     argv,
     ["topics", "editions", "name-lang", "months", "end", "rank"],
     ANALYZE_USAGE,
-    ["add-article"],
+    ["add-article", "highlight"],
   );
   if ("error" in parsed) return blocked(deps, parsed.error);
   const options = parsed.options;
@@ -145,7 +151,17 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
   }
   const extras = parseExtraArticles(options["add-article"] ?? [], topics, editions);
   if ("error" in extras) return blocked(deps, extras.error);
-  const request: Request = { topics, editions, nameLanguage, window, ranking, extraArticles: extras.extraArticles };
+  const highlights = parseHighlights(options.highlight ?? [], topics, editions);
+  if ("error" in highlights) return blocked(deps, highlights.error);
+  const request: Request = {
+    topics,
+    editions,
+    nameLanguage,
+    window,
+    ranking,
+    extraArticles: extras.extraArticles,
+    highlights: highlights.highlights,
+  };
   if (topics.length > MAX_TOPICS || editions.length > MAX_EDITIONS) return blockedTooLarge(deps, request);
   const pageviews = pageviewCache(http, deps.cacheDir, now);
 
@@ -307,6 +323,26 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
       notEnoughEvidence: notEnoughEvidence.map(keyOf),
     },
   });
+  const isHighlighted = (basket: Basket) =>
+    request.highlights.some(({ topic, edition }) => idOf(topic) === basket.topic && edition === basket.edition);
+  const withViews = inTableOrder.filter(hasViews);
+  const charted = chooseLines(withViews, isHighlighted);
+  const chartFile =
+    charted.length === 0
+      ? undefined
+      : writeChartSvg(
+          folder.path,
+          await renderChart(
+            charted.map((basket) => ({
+              label: chartLabel(basket, charted, names),
+              monthly: basket.monthly,
+              spikeMonths: spikeMonths(basket),
+              // Weak evidence stays on the chart, but never looks like a ranked line.
+              dashed: !ranked.includes(basket),
+            })),
+          ),
+        );
+  const chartSteps = chartStepLines(inTableOrder, charted, withViews, isHighlighted, names);
 
   const lines = [
     `rerun: ${COMMAND} ${rerun}`,
@@ -328,9 +364,10 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
     "",
     ...CAVEAT_LINES,
     "",
-    ...nextStepLines(resolvedTopics, inTableOrder, editions, names, nameLanguage),
+    ...nextStepLines(resolvedTopics, inTableOrder, editions, names, nameLanguage, chartSteps),
     "",
     `run file: ${runFile}`,
+    `chart: ${chartFile ?? "none, no Basket has views to draw"}`,
   ];
   deps.stdout.write(`${lines.join("\n")}\n`);
   const failures = baskets.some(
@@ -439,10 +476,14 @@ function blockedTooLarge(deps: Dependencies, request: Request): ExitCode {
   ].filter((part) => part !== undefined);
   const commands = chunks(request.topics, MAX_TOPICS).flatMap((topics) =>
     chunks(request.editions, MAX_EDITIONS).map((editions) => {
-      const extraArticles = request.extraArticles.filter(
-        (extra) => topics.includes(extra.topic) && editions.includes(extra.edition),
-      );
-      return analyzeCommand({ ...request, topics, editions, extraArticles });
+      const inRun = ({ topic, edition }: BasketKey) => topics.includes(topic) && editions.includes(edition);
+      return analyzeCommand({
+        ...request,
+        topics,
+        editions,
+        extraArticles: request.extraArticles.filter(inRun),
+        highlights: request.highlights.filter(inRun),
+      });
     }),
   );
   const lines = [
@@ -516,6 +557,7 @@ function nextStepLines(
   editions: string[],
   names: Map<string, string | undefined>,
   nameLanguage: string,
+  chartSteps: string[],
 ): string[] {
   const steps = [];
   for (const { topic, item, search } of resolved) {
@@ -543,6 +585,7 @@ function nextStepLines(
       );
     }
   }
+  steps.push(...chartSteps);
   steps.push(
     "  - For a follow-up (another Edition or Topic, a longer Window, another ranking), edit the rerun: line and run it " +
       "again; months already fetched come from the cache.",
@@ -628,12 +671,69 @@ function reasonLines(baskets: Basket[], names: Map<string, string | undefined>):
         ]
       : [],
   );
-  return lines.length === 0 ? ["reasons: none, every Check passed"] : ["reasons:", ...lines];
+  if (lines.length > 0) return ["reasons:", ...lines];
+  // An error row was never judged, so "every Check passed" would claim more than the Run knows.
+  return baskets.some((basket) => !basket.verdict)
+    ? ["reasons: none; error rows have no Checks, and next steps say what failed"]
+    : ["reasons: none, every Check passed"];
 }
 
 function topicName(basket: { topic: string }, names: Map<string, string | undefined>): string {
   const label = names.get(basket.topic);
   return label ? `${label} (${basket.topic})` : basket.topic;
+}
+
+/** Next steps about the chart: highlighted Baskets it can't draw, and Baskets it leaves out. */
+function chartStepLines(
+  baskets: Basket[],
+  charted: Basket[],
+  withViews: Basket[],
+  isHighlighted: (basket: Basket) => boolean,
+  names: Map<string, string | undefined>,
+): string[] {
+  const steps = baskets
+    .filter((basket) => isHighlighted(basket) && !withViews.includes(basket))
+    .map(
+      (basket) =>
+        `  - ${topicName(basket, names)} in ${basket.edition} is highlighted, but it has no views to draw on the chart.`,
+    );
+  if (charted.length < withViews.length) {
+    // Every highlighted Basket with views is charted, since --highlight allows no more than the chart has lines.
+    const which = charted.some(isHighlighted)
+      ? "the highlighted ones and the first rows of the tables"
+      : "the first rows of the tables";
+    steps.push(
+      `  - The chart shows ${charted.length} of the ${withViews.length} Baskets with views, ${which}. ` +
+        `To chart another, add --highlight '<Topic>:<edition>' to the rerun: line (at most ${MAX_CHART_LINES}) and run it again.`,
+    );
+  }
+  return steps;
+}
+
+function hasViews(basket: Basket): boolean {
+  return basket.monthly.some((row) => row.hasData);
+}
+
+/**
+ * A chart line's name: the Topic's label and the Edition, then the Confidence when it's too low to rank. When another
+ * charted Topic has the same label, told apart only by case or not at all ("Mercury" and "mercury"), the item id is
+ * added.
+ */
+function chartLabel(basket: Basket, charted: Basket[], names: Map<string, string | undefined>): string {
+  const label = (topic: string) => names.get(topic) ?? topic;
+  const shared = charted.some(
+    (other) => other.topic !== basket.topic && label(other.topic).toLowerCase() === label(basket.topic).toLowerCase(),
+  );
+  const topic = shared ? topicName(basket, names) : label(basket.topic);
+  const confidence = basket.verdict?.confidence;
+  const note = confidence === "low" ? " (low confidence)" : confidence === "insufficient" ? " (insufficient)" : "";
+  return `${topic} · ${basket.edition}${note}`;
+}
+
+/** The months holding the Basket's highest-view days, when its Spike Check failed; otherwise none. */
+function spikeMonths({ metrics, verdict }: Basket): string[] {
+  if (!metrics || !verdict?.failedChecks.some((failed) => failed.check === "spikes")) return [];
+  return unique(metrics.topDays.map(({ day }) => day.slice(0, 7)));
 }
 
 function resolvedId(resolution: Resolved | RequestFailed | undefined): string | undefined {
@@ -642,7 +742,7 @@ function resolvedId(resolution: Resolved | RequestFailed | undefined): string | 
 
 /**
  * An analyze command, with the Window spelled out so a re-run covers the same months. `topicAs` rewrites each Topic,
- * e.g. into its Wikidata item id, both in --topics and in --add-article.
+ * e.g. into its Wikidata item id, in --topics, --add-article and --highlight.
  */
 function analyzeCommand(request: Request, topicAs: (topic: string) => string = (topic) => topic): string {
   const { editions, window, nameLanguage, ranking } = request;
@@ -650,44 +750,87 @@ function analyzeCommand(request: Request, topicAs: (topic: string) => string = (
   const topics = request.topics.map(topicAs).filter((topic, i, all) => !isItemId(topic) || all.indexOf(topic) === i);
   const hasNames = topics.some((topic) => !isItemId(topic));
   const added = unique(request.extraArticles.map(({ topic, edition, title }) => `${topicAs(topic)}:${edition}:${title}`));
+  const highlighted = unique(request.highlights.map(({ topic, edition }) => `${topicAs(topic)}:${edition}`));
   return [
     `analyze --topics ${hasNames ? shellQuote(topics.join(",")) : topics.join(",")} --editions ${editions.join(",")}`,
     hasNames ? nameLangOption(nameLanguage) : "",
     ` --months ${window.months} --end ${window.end}`,
     ranking === DEFAULT_RANKING ? "" : ` --rank ${ranking}`,
     ...added.map((extra) => ` --add-article ${shellQuote(extra)}`),
+    ...highlighted.map((highlight) => ` --highlight ${shellQuote(highlight)}`),
   ].join("");
 }
 
-/**
- * Reads each --add-article as <Topic>:<edition>:<Article title>. The Topic is written as in --topics, which is how
- * it's told apart from a colon in a Topic name; the title keeps any colons after the edition.
- */
+/** Reads each --add-article as <Topic>:<edition>:<Article title>; the title keeps any colons after the edition. */
 function parseExtraArticles(
   values: string[],
   topics: string[],
   editions: string[],
 ): { extraArticles: ExtraArticle[] } | { error: string } {
-  // The longest Topic first, so a Topic whose name starts with another Topic's is matched whole.
-  const byLength = [...topics].sort((a, b) => b.length - a.length);
   const extraArticles: ExtraArticle[] = [];
   for (const value of values) {
-    const topic = byLength.find((candidate) => value.startsWith(`${candidate}:`));
-    const [edition = "", ...rest] = topic === undefined ? [] : value.slice(topic.length + 1).split(":");
-    const title = rest.join(":").trim();
-    if (topic === undefined || title === "") {
-      return {
-        error:
-          `--add-article "${value}" must be <Topic>:<edition code>:<Article title>, with the Topic written as in ` +
-          `--topics (${topics.join(", ")}), e.g. --add-article '${topics[0]}:${editions[0]}:<Article title>'.`,
-      };
-    }
-    if (!editions.includes(edition)) {
-      return { error: `--add-article "${value}": "${edition}" isn't one of --editions (${editions.join(",")}).` };
-    }
-    extraArticles.push({ topic, edition, title });
+    const read = readBasket("--add-article", value, topics, editions, "<Article title>");
+    if ("error" in read) return read;
+    extraArticles.push({ topic: read.topic, edition: read.edition, title: read.rest });
   }
   return { extraArticles };
+}
+
+/** Reads each --highlight as <Topic>:<edition>, at most as many as the chart has lines. */
+function parseHighlights(
+  values: string[],
+  topics: string[],
+  editions: string[],
+): { highlights: BasketKey[] } | { error: string } {
+  const distinct = unique(values);
+  if (distinct.length > MAX_CHART_LINES) {
+    return {
+      error:
+        `the chart draws at most ${MAX_CHART_LINES} lines, so highlight at most ${MAX_CHART_LINES} Baskets, ` +
+        `not ${distinct.length}.`,
+    };
+  }
+  const highlights: BasketKey[] = [];
+  for (const value of distinct) {
+    const read = readBasket("--highlight", value, topics, editions);
+    if ("error" in read) return read;
+    highlights.push({ topic: read.topic, edition: read.edition });
+  }
+  return { highlights };
+}
+
+/**
+ * Reads an option value written as <Topic>:<edition>, followed by :<more> when `more` names a further part, which
+ * keeps any colons. The Topic is written as in --topics, which is how it's told apart from a colon in a Topic name.
+ */
+function readBasket(
+  option: string,
+  value: string,
+  topics: string[],
+  editions: string[],
+  more?: string,
+): { topic: string; edition: string; rest: string } | { error: string } {
+  const formatError = { error: basketFormatError(option, value, topics, editions, more) };
+  // The longest Topic first, so a Topic whose name starts with another Topic's is matched whole.
+  const topic = [...topics].sort((a, b) => b.length - a.length).find((candidate) => value.startsWith(`${candidate}:`));
+  if (topic === undefined) return formatError;
+  const [edition = "", ...parts] = value.slice(topic.length + 1).split(":");
+  if (!editions.includes(edition)) {
+    return { error: `${option} "${value}": "${edition}" isn't one of --editions (${editions.join(",")}).` };
+  }
+  const rest = parts.join(":").trim();
+  if (more ? rest === "" : parts.length > 0) return formatError;
+  return { topic, edition, rest };
+}
+
+function basketFormatError(option: string, value: string, topics: string[], editions: string[], more?: string): string {
+  const tail = more ? [more] : [];
+  const shape = ["<Topic>", "<edition code>", ...tail].join(":");
+  const example = [topics[0], editions[0], ...tail].join(":");
+  return (
+    `${option} "${value}" must be ${shape}, with the Topic written as in --topics (${topics.join(", ")}), ` +
+    `e.g. ${option} '${example}'.`
+  );
 }
 
 /**

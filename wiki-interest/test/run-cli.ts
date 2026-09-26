@@ -47,10 +47,14 @@ export function newCacheDir(): string {
   return mkdtempSync(join(tmpdir(), "wiki-interest-cache-"));
 }
 
+/** The path the Run printed on its `run file:` line. */
+export function runFilePath(stdout: string): string {
+  return stdout.match(/^run file: (.+)$/m)![1]!;
+}
+
 /** The Run JSON whose path the Run printed on its `run file:` line. */
 export function runJson(stdout: string) {
-  const runFile = stdout.match(/^run file: (.+)$/m)![1]!;
-  return JSON.parse(readFileSync(runFile, "utf8"));
+  return JSON.parse(readFileSync(runFilePath(stdout), "utf8"));
 }
 
 export function astronomyInUkrainian() {
@@ -59,4 +63,26 @@ export function astronomyInUkrainian() {
     description: "natural science studying celestial objects",
     articles: { uk: "Астрономія", en: "Astronomy" },
   });
+}
+
+/** Astronomy (Q333) and physics (Q413), each with an Article in uk and pl. */
+export function twoTopicsInTwoEditions() {
+  return fakeWikimedia()
+    .item("Q333", {
+      label: "astronomy",
+      description: "natural science studying celestial objects",
+      articles: { uk: "Астрономія", pl: "Astronomia" },
+    })
+    .item("Q413", { label: "physics", description: "natural science", articles: { uk: "Фізика", pl: "Fizyka" } })
+    .editionTotals("uk", () => EDITION_VIEWS)
+    .editionTotals("pl", () => EDITION_VIEWS);
+}
+
+/** Growing fast, flat, growing slowly, and too few views to judge. */
+export function fourBaskets() {
+  return twoTopicsInTwoEditions()
+    .article("uk", "Астрономія", linear(2_000, 6_000))
+    .article("pl", "Astronomia", () => 5_000)
+    .article("uk", "Фізика", linear(3_000, 4_000))
+    .article("pl", "Fizyka", () => 50);
 }
