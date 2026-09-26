@@ -15,6 +15,7 @@ import type { Http } from "./http.ts";
 /**
  * A name's best exact match is accepted only when it has at least this many times as many Wikipedia Articles as
  * the next one. Measured: astronomy 252 vs 9 (accepted), Mercury 250 (planet) vs 176 (element) (ambiguous).
+ * references/metrics.md states this ratio for the agent; change it with it.
  */
 export const DOMINANCE_RATIO = 3;
 /** How many candidates an Ambiguous topic or the resolve command lists. */
