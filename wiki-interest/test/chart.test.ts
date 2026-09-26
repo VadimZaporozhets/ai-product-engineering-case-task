@@ -41,7 +41,7 @@ function legend(svg: string): string[] {
 /** The lines drawn dashed, by the name vega gives each line in its accessible label. */
 function dashed(svg: string): string[] {
   return [...svg.matchAll(/<path aria-label="[^"]*; basket: ([^";]*)[^"]*"[^>]*aria-roledescription="line mark"[^>]*>/g)]
-    .filter(([path]) => !/stroke-dasharray="1,0"/.test(path!))
+    .filter(([path]) => /stroke-dasharray="[^"]+"/.test(path!))
     .map(([, label]) => label!);
 }
 
