@@ -1,4 +1,6 @@
 // Every threshold of the Verdict, in one place (spec "Metrics and Verdict").
+// references/metrics.md states these numbers for the agent, and SKILL.md's Window section relies on seasonMonths and
+// significance (Windows not a multiple of 24 months, Windows of 4 months or fewer); change both with them.
 
 export const THRESHOLDS = {
   /** Growth above +10% is growing and below −10% declining; flat in between. Raw change uses the same band. */

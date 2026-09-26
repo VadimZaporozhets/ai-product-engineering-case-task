@@ -2,6 +2,7 @@
 // checks it here and lists every problem, so the agent can fix them all in one edit.
 
 /** Character limits that keep the Report on one page, at its longest Run and in Ukrainian. */
+// SKILL.md's Report section states these limits for the agent; change it with them.
 const NARRATIVE_LIMITS = { headline: 90, finding: 200, recommendation: 200, nextStep: 160 } as const;
 const MAX_FINDINGS = 3;
 
