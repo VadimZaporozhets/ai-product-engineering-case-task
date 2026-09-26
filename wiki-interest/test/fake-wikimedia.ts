@@ -25,6 +25,9 @@ type FakeArticle = {
 
 type FakeTotals = { series: MonthlySeries; status?: number };
 
+/** An error answer: an HTTP status and, optionally, a Retry-After header. */
+type Interruption = { status: number; retryAfter?: string };
+
 export function fakeWikimedia() {
   const items = new Map<string, FakeItem>();
   const totals = new Map<string, FakeTotals>();
@@ -32,10 +35,14 @@ export function fakeWikimedia() {
   /** Item ids a Wikidata name search finds, by name. */
   const searches = new Map<string, string[]>();
   const requests: URL[] = [];
-  let wikidataStatus: number | undefined;
+  /** The User-Agent header of each request, in the order of `requests`. */
+  const userAgents: (string | null)[] = [];
+  /** Error answers each host gives its next requests, before answering normally again. */
+  const interruptions = new Map<string, Interruption[]>();
 
   const fake = {
     requests,
+    userAgents,
 
     item(id: string, item: FakeItem) {
       items.set(id, item);
@@ -48,9 +55,9 @@ export function fakeWikimedia() {
       return fake;
     },
 
-    /** Answer every Wikidata request with this HTTP status. */
-    failWikidata(status: number) {
-      wikidataStatus = status;
+    /** Answer the next requests to this host with these errors, in order, then answer normally. */
+    interrupt(host: string, answers: Interruption[]) {
+      interruptions.set(host, [...(interruptions.get(host) ?? []), ...answers]);
       return fake;
     },
 
@@ -74,16 +81,25 @@ export function fakeWikimedia() {
       return fake;
     },
 
-    fetch: async (input: string | URL): Promise<Response> => {
+    fetch: async (input: string | URL, init?: RequestInit): Promise<Response> => {
       const url = new URL(input);
       requests.push(url);
+      userAgents.push(new Headers(init?.headers).get("user-agent"));
+      const interruption = interruptions.get(url.hostname)?.shift();
+      if (interruption) {
+        const headers: Record<string, string> = interruption.retryAfter ? { "retry-after": interruption.retryAfter } : {};
+        return json(interruption.status, { error: "fake interruption" }, headers);
+      }
       if (url.hostname === "www.wikidata.org") {
-        if (wikidataStatus) return json(wikidataStatus, { error: "fake failure" });
         const action = url.searchParams.get("action");
         if (action === "wbgetentities") return wbgetentities(url, items);
         if (action === "wbsearchentities") return wbsearchentities(url, items, searches);
         if (action === "wbgetclaims") return wbgetclaims(url, items);
         throw new Error(`fake-wikimedia: unexpected Wikidata request ${url}`);
+      }
+      if (url.hostname.endsWith(".wikipedia.org") && url.searchParams.get("list") === "search") {
+        // An Edition's own search, run for a Missing article; the fake finds nothing.
+        return json(200, { batchcomplete: "", query: { searchinfo: { totalhits: 0 }, search: [] } });
       }
       const path = url.pathname.split("/").map(decodeURIComponent);
       if (url.hostname === "wikimedia.org" && path[5] === "per-article") return perArticle(path, articles);
@@ -248,6 +264,6 @@ export function pageviewRequests(requests: URL[]): URL[] {
   return requests.filter((url) => url.hostname === "wikimedia.org");
 }
 
-export function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+export function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 }

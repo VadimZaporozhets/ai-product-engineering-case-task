@@ -96,10 +96,10 @@ describe("Missing articles", () => {
   });
 
   test("a failed candidate search keeps the Missing article, and exits with partial failure", async () => {
-    // The fake knows no pl Wikipedia search, so that request fails.
     const fake = fakeWikimedia()
       .item("Q1666254", { label: "intermittent fasting", description: "a diet", articles: { cs: "Přerušovaný půst" } })
-      .editionTotals("pl", () => 100_000_000);
+      .editionTotals("pl", () => 100_000_000)
+      .interrupt("pl.wikipedia.org", [{ status: 400 }]);
 
     const { code, stdout } = await run(["analyze", "--topics", "Q1666254", "--editions", "pl"], fake);
 

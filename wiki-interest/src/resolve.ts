@@ -8,9 +8,9 @@ import {
   isDisambiguationPage,
   searchArticles,
   searchItems,
-  type Fetch,
   type WikidataItem,
 } from "./wikimedia.ts";
+import type { Http } from "./http.ts";
 
 /**
  * A name's best exact match is accepted only when it has at least this many times as many Wikipedia Articles as
@@ -48,17 +48,17 @@ export function isItemId(topic: string): boolean {
  * LISTED_CANDIDATES when none is accepted or `listAll` is set.
  */
 export async function searchName(
-  fetch: Fetch,
+  http: Http,
   name: string,
   options: { language: string; labelLanguages: string[]; listAll?: boolean },
 ): Promise<NameSearch> {
-  const hits = await searchItems(fetch, name, options.language);
+  const hits = await searchItems(http, name, options.language);
   const wanted = name.toLocaleLowerCase();
   const exactHits = hits.filter((hit) => hit.texts.some((text) => text.toLocaleLowerCase() === wanted));
   const exact = exactHits.length > 0;
   const pool = exact ? exactHits : hits.slice(0, LISTED_CANDIDATES);
   const items = await fetchItems(
-    fetch,
+    http,
     pool.map((hit) => hit.id),
     options.labelLanguages,
   );
@@ -73,7 +73,7 @@ export async function searchName(
   const listUpTo = async (count: number) => {
     while (candidates.length < count && checked < ranked.length) {
       const candidate = ranked[checked++]!;
-      if (!(await isDisambiguationPage(fetch, candidate.item.id))) candidates.push(candidate);
+      if (!(await isDisambiguationPage(http, candidate.item.id))) candidates.push(candidate);
     }
   };
 
@@ -102,8 +102,8 @@ function dominates(best: Candidate, next: Candidate | undefined): boolean {
 }
 
 /** Up to three Articles an Edition's search finds, shown for a Missing article and never analysed on their own. */
-export function missingArticleCandidates(fetch: Fetch, edition: string, term: string): Promise<string[]> {
-  return searchArticles(fetch, edition, term, MISSING_ARTICLE_CANDIDATES);
+export function missingArticleCandidates(http: Http, edition: string, term: string): Promise<string[]> {
+  return searchArticles(http, edition, term, MISSING_ARTICLE_CANDIDATES);
 }
 
 /** The item's label in a language, falling back to English. */

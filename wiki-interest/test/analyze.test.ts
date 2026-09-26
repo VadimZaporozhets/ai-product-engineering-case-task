@@ -156,12 +156,14 @@ describe("analyze one Topic in one Edition", () => {
   });
 
   test("shows an error row and exits with partial failure when Wikidata can't be reached", async () => {
-    const fake = astronomyInUkrainian().editionTotals("uk", () => 100_000_000).failWikidata(503);
+    const fake = astronomyInUkrainian()
+      .editionTotals("uk", () => 100_000_000)
+      .interrupt("www.wikidata.org", Array(3).fill({ status: 503 }));
 
     const { code, stdout } = await run(["analyze", "--topics", "Q333", "--editions", "uk"], fake);
 
     expect(code).toBe(EXIT_CODES.partialFailure);
-    expect(stdout).toContain("| Q333 | uk | error: Wikidata lookup failed: www.wikidata.org answered HTTP 503 |");
+    expect(stdout).toContain("| Q333 | uk | error: Wikidata lookup failed: www.wikidata.org answered HTTP 503 after 3 attempts |");
   });
 
   test("refuses something that isn't an Edition code", async () => {
