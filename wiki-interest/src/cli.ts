@@ -1,13 +1,14 @@
 // The CLI entry function. scripts/wiki-interest.js calls runFromProcess() after its setup checks;
 // tests call main() directly with injected dependencies.
 
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.ts";
 import { createHttp, RequestFailed, type Fetch, type Http } from "./http.ts";
-import { signedPercent } from "./format.ts";
+import { ENGLISH_LABELS, labelsFor } from "./labels.ts";
 import { measureBasket, type Metrics, type MonthRow } from "./metrics.ts";
 import { monthRange } from "./months.ts";
 import {
@@ -30,8 +31,10 @@ import {
   rankingHeading,
   type RankingCriterion,
 } from "./ranking.ts";
-import { createRunFolder, writeChartSvg, writeRunJson } from "./run-files.ts";
-import { chooseLines, MAX_CHART_LINES, renderChart } from "./chart.ts";
+import { fieldList, parseNarrative } from "./narrative.ts";
+import { createRunFolder, readRunJson, RUN_FILE, writeChartSvg, writeReportPdf, writeRunJson } from "./run-files.ts";
+import { chartLines, chooseLines, hasViews, MAX_CHART_LINES, renderChart, topicName } from "./chart.ts";
+import { tableColumns, tableRow } from "./table.ts";
 import { judge, missingArticleVerdict, type Verdict } from "./verdict.ts";
 import { resolveWindow, type Window } from "./window.ts";
 import { fetchItems, lookupArticle, project, type WikidataItem } from "./wikimedia.ts";
@@ -64,6 +67,7 @@ export async function main(argv: string[], deps: Dependencies): Promise<ExitCode
   const http = createHttp(deps);
   if (command === "analyze") return analyze(rest, deps, http);
   if (command === "resolve") return resolve(rest, deps, http);
+  if (command === "report") return report(rest, deps);
   return blocked(deps, `unknown command "${command ?? ""}". Usage: ${USAGE}`);
 }
 
@@ -84,9 +88,10 @@ const ANALYZE_USAGE =
   "[--months <count>] [--end <YYYY-MM>] [--rank growth|interest|share] " +
   "[--add-article <Topic>:<edition code>:<Article title>]... [--highlight <Topic>:<edition code>]...";
 const RESOLVE_USAGE = "resolve --topic <Topic name> [--name-lang <language code>] [--editions <edition codes>]";
-const USAGE = `${ANALYZE_USAGE}, or ${RESOLVE_USAGE}`;
+const REPORT_USAGE = "report --run <Run folder> --narrative <Narrative file>";
+const USAGE = `${ANALYZE_USAGE}, or ${RESOLVE_USAGE}, or ${REPORT_USAGE}`;
 
-type Basket = {
+export type Basket = {
   /** The Wikidata item id, or the Topic as given when it couldn't be resolved. */
   topic: string;
   edition: string;
@@ -117,8 +122,37 @@ type Request = {
   highlights: BasketKey[];
 };
 
-/** A Basket named by its Topic, written as in --topics, and its Edition. */
-type BasketKey = { topic: string; edition: string };
+/** A Basket named by its Topic, written as in --topics or as its item id, and its Edition. */
+export type BasketKey = { topic: string; edition: string };
+
+/** What a Run file holds. The report command reads it back, so a Report needs nothing else from the Run. */
+export type RunRecord = {
+  id: string;
+  createdAt: string;
+  rerun: string;
+  request: Request;
+  resolution: {
+    topic: string;
+    id: string;
+    label: string | undefined;
+    description: string | undefined;
+    wikipediaArticles: number;
+    articles: Record<string, string | null>;
+    /** The name search behind the item, when the Topic was given by name. */
+    search:
+      | {
+          name: string;
+          language: string;
+          matches: number;
+          candidates: { id: string; wikipediaArticles: number }[];
+        }
+      | undefined;
+  }[];
+  baskets: Basket[];
+  ranking: { by: RankingCriterion; ranked: BasketKey[]; notEnoughEvidence: BasketKey[] };
+  /** The Baskets the chart draws, in legend order. */
+  chart: BasketKey[];
+};
 
 /** An Article the agent adds to the Basket of one Topic in one Edition. */
 type ExtraArticle = BasketKey & { title: string };
@@ -296,8 +330,12 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
   // Reasons and next steps follow the tables' order.
   const inTableOrder = [...ranked, ...notEnoughEvidence];
   const keyOf = ({ topic, edition }: Basket) => ({ topic, edition });
+  const isHighlighted = (basket: Basket) =>
+    request.highlights.some(({ topic, edition }) => idOf(topic) === basket.topic && edition === basket.edition);
+  const withViews = inTableOrder.filter(hasViews);
+  const charted = chooseLines(withViews, isHighlighted);
   const folder = createRunFolder(deps.outputDir, now, rerun);
-  const runFile = writeRunJson(folder.path, {
+  const run: RunRecord = {
     id: folder.id,
     createdAt: now.toISOString(),
     rerun,
@@ -322,26 +360,13 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
       ranked: ranked.map(keyOf),
       notEnoughEvidence: notEnoughEvidence.map(keyOf),
     },
-  });
-  const isHighlighted = (basket: Basket) =>
-    request.highlights.some(({ topic, edition }) => idOf(topic) === basket.topic && edition === basket.edition);
-  const withViews = inTableOrder.filter(hasViews);
-  const charted = chooseLines(withViews, isHighlighted);
+    chart: charted.map(keyOf),
+  };
+  const runFile = writeRunJson(folder.path, run);
   const chartFile =
     charted.length === 0
       ? undefined
-      : writeChartSvg(
-          folder.path,
-          await renderChart(
-            charted.map((basket) => ({
-              label: chartLabel(basket, charted, names),
-              monthly: basket.monthly,
-              spikeMonths: spikeMonths(basket),
-              // Weak evidence stays on the chart, but never looks like a ranked line.
-              dashed: !ranked.includes(basket),
-            })),
-          ),
-        );
+      : writeChartSvg(folder.path, await renderChart(chartLines(charted, (basket) => ranked.includes(basket), names)));
   const chartSteps = chartStepLines(inTableOrder, charted, withViews, isHighlighted, names);
 
   const lines = [
@@ -364,7 +389,7 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
     "",
     ...CAVEAT_LINES,
     "",
-    ...nextStepLines(resolvedTopics, inTableOrder, editions, names, nameLanguage, chartSteps),
+    ...nextStepLines(resolvedTopics, inTableOrder, editions, names, nameLanguage, chartSteps, folder.path),
     "",
     `run file: ${runFile}`,
     `chart: ${chartFile ?? "none, no Basket has views to draw"}`,
@@ -427,6 +452,54 @@ async function resolve(argv: string[], deps: Dependencies, http: Http): Promise<
     ...search.candidates.flatMap(itemLines),
     ...moreLine(search),
     `result: ${outcome}`,
+  ];
+  deps.stdout.write(`${lines.join("\n")}\n`);
+  return EXIT_CODES.success;
+}
+
+/** Writes a Run's one-page PDF Report from its Run file and the agent's Narrative; it makes no requests. */
+async function report(argv: string[], deps: Dependencies): Promise<ExitCode> {
+  const parsed = parseOptions(argv, ["run", "narrative"], REPORT_USAGE);
+  if ("error" in parsed) return blocked(deps, parsed.error);
+  const { run: runOption, narrative: narrativeFile } = parsed.options;
+  if (!runOption || !narrativeFile) {
+    return blocked(deps, `give the Run folder with --run and the Narrative file with --narrative. Usage: ${REPORT_USAGE}`);
+  }
+  // The run file's own path, as analyze prints it, names its folder too.
+  const folder = basename(runOption) === RUN_FILE ? dirname(runOption) : runOption;
+  const read = readRunJson<RunRecord>(folder);
+  if ("error" in read) return blocked(deps, read.error);
+  const { run } = read;
+  if (!Array.isArray(run.chart)) {
+    return blocked(deps, `the Run file at ${join(folder, RUN_FILE)} predates Reports. Run its rerun: line, then report on the new Run.`);
+  }
+
+  let text;
+  try {
+    text = readFileSync(narrativeFile, "utf8");
+  } catch {
+    return blocked(deps, `no Narrative file at ${narrativeFile}.`);
+  }
+  const parsedNarrative = parseNarrative(text);
+  if ("notJson" in parsedNarrative) {
+    return blocked(
+      deps,
+      `the Narrative file ${narrativeFile} isn't valid JSON (${parsedNarrative.notJson}). Write one JSON object ` +
+        `with ${fieldList()}.`,
+    );
+  }
+  if ("problems" in parsedNarrative) {
+    const problems = parsedNarrative.problems.map((problem) => `  - ${problem}`);
+    return blocked(deps, ["the Narrative file needs fixing; no Report was made:", ...problems].join("\n"));
+  }
+  const { narrative } = parsedNarrative;
+  const { labels, fallback } = labelsFor(narrative.language);
+  // Loaded here, so analyze and resolve don't load the PDF libraries.
+  const { makeReport } = await import("./report.ts");
+  const path = writeReportPdf(folder, await makeReport(run, narrative, labels, deps.now()));
+  const lines = [
+    `report: ${path}`,
+    `labels: ${fallback ? `English (no labels for ${narrative.language}; the Narrative stays as written)` : labels.name}`,
   ];
   deps.stdout.write(`${lines.join("\n")}\n`);
   return EXIT_CODES.success;
@@ -558,6 +631,7 @@ function nextStepLines(
   names: Map<string, string | undefined>,
   nameLanguage: string,
   chartSteps: string[],
+  runFolder: string,
 ): string[] {
   const steps = [];
   for (const { topic, item, search } of resolved) {
@@ -587,18 +661,18 @@ function nextStepLines(
   }
   steps.push(...chartSteps);
   steps.push(
+    "  - For a one-page PDF Report, write a Narrative file (a JSON object: language, headline, 1 to 3 findings, " +
+      `recommendation, nextStep) and run \`${COMMAND} report --run ${shellQuote(runFolder)} --narrative <file>\`.`,
+  );
+  steps.push(
     "  - For a follow-up (another Edition or Topic, a longer Window, another ranking), edit the rerun: line and run it " +
       "again; months already fetched come from the cache.",
   );
   return ["next steps:", ...steps];
 }
 
-/** Limitations of the method that apply to every Run. */
-const CAVEAT_LINES = [
-  "caveats:",
-  "  - Interest is not willingness to pay: Wikipedia views show what people look up, not what they would buy.",
-  "  - An Edition is a language, not a country: its readers are everyone who reads that language, wherever they live.",
-];
+/** Limitations of the method that apply to every Run; the Report states the same ones. */
+const CAVEAT_LINES = ["caveats:", ...ENGLISH_LABELS.caveats.map((caveat) => `  - ${caveat}`)];
 
 /** Waits for a request; a RequestFailed comes back as the value, its message prefixed with what was asked for. */
 async function settle<T>(request: Promise<T>, context: string): Promise<T | RequestFailed> {
@@ -618,47 +692,18 @@ function tableLines(
   ranking: RankingCriterion,
 ): string[] {
   if (baskets.length === 0) return [`${heading}: none`];
-  const perMillion = perMillionColumn(ranking);
+  const columns = tableColumns(ENGLISH_LABELS, ranking);
+  const row = (cells: string[]) => `| ${cells.join(" | ")} |`;
   return [
     `${heading}:`,
-    `| Topic | Edition | Direction | Confidence | Growth | Raw change | Median monthly views | ${perMillion.heading} |`,
-    "|---|---|---|---|---|---|---|---|",
-    ...baskets.map((basket) => resultRow(basket, names, perMillion.value)),
+    row(columns),
+    `|${"---|".repeat(columns.length)}`,
+    ...baskets.map((basket) => {
+      const cells = tableRow(basket, topicName(basket, names), ENGLISH_LABELS, ranking);
+      // A failed Basket's reason fills its cell; the columns after it stay empty.
+      return row(cells) + " |".repeat(columns.length - cells.length);
+    }),
   ];
-}
-
-/**
- * The views per million column. Ranked by share, it shows the second half's figure the ranking sorts by, so the
- * column reads in rank order; otherwise the whole Window's.
- */
-function perMillionColumn(ranking: RankingCriterion): { heading: string; value: (metrics: Metrics) => number | null } {
-  return ranking === "share"
-    ? { heading: "Views per million (2nd half)", value: (metrics) => metrics.halves.second.viewsPerMillion }
-    : { heading: "Views per million", value: (metrics) => metrics.viewsPerMillion };
-}
-
-function resultRow(
-  basket: Basket,
-  names: Map<string, string | undefined>,
-  perMillionOf: (metrics: Metrics) => number | null,
-): string {
-  const topic = topicName(basket, names);
-  const { metrics, verdict } = basket;
-  if (basket.error || !verdict) return `| ${topic} | ${basket.edition} | error: ${basket.error} | | | | | |`;
-  // A Basket judged without views (a Missing article) has no metrics: every figure is n/a.
-  const median = metrics?.medianMonthlyViews ?? null;
-  const perMillion = metrics ? perMillionOf(metrics) : null;
-  const cells = [
-    topic,
-    basket.edition,
-    verdict.direction ?? "none",
-    verdict.confidence,
-    percent(metrics?.growth ?? null),
-    percent(metrics?.rawChange ?? null),
-    median === null ? "n/a" : String(Math.round(median)),
-    perMillion === null ? "n/a" : perMillion.toFixed(2),
-  ];
-  return `| ${cells.join(" | ")} |`;
 }
 
 /** The Reason of every failed Check, grouped under its Basket. */
@@ -676,11 +721,6 @@ function reasonLines(baskets: Basket[], names: Map<string, string | undefined>):
   return baskets.some((basket) => !basket.verdict)
     ? ["reasons: none; error rows have no Checks, and next steps say what failed"]
     : ["reasons: none, every Check passed"];
-}
-
-function topicName(basket: { topic: string }, names: Map<string, string | undefined>): string {
-  const label = names.get(basket.topic);
-  return label ? `${label} (${basket.topic})` : basket.topic;
 }
 
 /** Next steps about the chart: highlighted Baskets it can't draw, and Baskets it leaves out. */
@@ -708,32 +748,6 @@ function chartStepLines(
     );
   }
   return steps;
-}
-
-function hasViews(basket: Basket): boolean {
-  return basket.monthly.some((row) => row.hasData);
-}
-
-/**
- * A chart line's name: the Topic's label and the Edition, then the Confidence when it's too low to rank. When another
- * charted Topic has the same label, told apart only by case or not at all ("Mercury" and "mercury"), the item id is
- * added.
- */
-function chartLabel(basket: Basket, charted: Basket[], names: Map<string, string | undefined>): string {
-  const label = (topic: string) => names.get(topic) ?? topic;
-  const shared = charted.some(
-    (other) => other.topic !== basket.topic && label(other.topic).toLowerCase() === label(basket.topic).toLowerCase(),
-  );
-  const topic = shared ? topicName(basket, names) : label(basket.topic);
-  const confidence = basket.verdict?.confidence;
-  const note = confidence === "low" ? " (low confidence)" : confidence === "insufficient" ? " (insufficient)" : "";
-  return `${topic} · ${basket.edition}${note}`;
-}
-
-/** The months holding the Basket's highest-view days, when its Spike Check failed; otherwise none. */
-function spikeMonths({ metrics, verdict }: Basket): string[] {
-  if (!metrics || !verdict?.failedChecks.some((failed) => failed.check === "spikes")) return [];
-  return unique(metrics.topDays.map(({ day }) => day.slice(0, 7)));
 }
 
 function resolvedId(resolution: Resolved | RequestFailed | undefined): string | undefined {
@@ -880,10 +894,6 @@ function lookupItems(
 
 function noSuchItem(id: string): string {
   return `Wikidata item ${id} doesn't exist.`;
-}
-
-function percent(value: number | null): string {
-  return value === null ? "n/a" : signedPercent(value);
 }
 
 function blocked(deps: Dependencies, message: string): ExitCode {

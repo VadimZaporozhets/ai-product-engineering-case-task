@@ -342,7 +342,9 @@ describe("the rerun line", () => {
 
     expect(second.code).toBe(first.code);
     expect(later.requests.some((url) => url.searchParams.get("action") === "wbsearchentities")).toBe(false);
-    const results = (stdout: string) => stdout.split("\n").filter((line) => /^(window: |ranked |\| |reasons:| {2}- )/.test(line));
+    // The report step names each Run's own folder.
+    const results = (stdout: string) =>
+      stdout.split("\n").filter((line) => /^(window: |ranked |\| |reasons:| {2}- )/.test(line) && !line.includes(" report --run "));
     expect(results(second.stdout)).toEqual(results(first.stdout).filter((line) => !line.includes("was chosen for")));
     expect(second.stdout).toContain(`rerun: ${rerun}\n`);
   });

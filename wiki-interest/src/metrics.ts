@@ -69,12 +69,15 @@ export function measureBasket(
   return { monthly: rows, metrics: computeMetrics(rows, articles, firstMonths) };
 }
 
+/** A Window's months, split into its first and second half. For an odd number, the middle month belongs to neither. */
+export function splitHalves<T>(months: T[]): [T[], T[]] {
+  const halfLength = Math.floor(months.length / 2);
+  return [months.slice(0, halfLength), months.slice(months.length - halfLength)];
+}
+
 function computeMetrics(rows: MonthRow[], articles: ArticleViews[], firstMonths: Metrics["firstMonths"]): Metrics {
   const withData = rows.filter((row) => row.hasData);
-  // For an odd number of months, the middle month belongs to neither half.
-  const halfLength = Math.floor(rows.length / 2);
-  const firstHalf = rows.slice(0, halfLength);
-  const secondHalf = rows.slice(rows.length - halfLength);
+  const [firstHalf, secondHalf] = splitHalves(rows);
   const first = firstHalf.filter((row) => row.hasData);
   const second = secondHalf.filter((row) => row.hasData);
   const topDays = highestDays(articles, THRESHOLDS.spikeDays);
