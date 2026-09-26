@@ -20,6 +20,7 @@ Contents:
 - A **Basket** is the set of Articles that stands for one Topic in one Edition: the Article linked from the Topic's Wikidata item, plus any you added with `--add-article`. Their views are summed.
 - **Edition totals** are all human views of the whole Edition (e.g. all of Polish Wikipedia) per month, with the same filters.
 - **Months with data** are the months from the first month with data of any Article in the Basket onward. Months before an Article existed don't count; a later month with zero views does.
+- An Article's **first month with data** is its first month with at least 5% of its median monthly views over the Window's second half. When that median is zero, it's the first month with any views. Earlier months with only a trickle of views count as no data. So an Article created on a title that used to be a redirect starts when the Article does: Leo XIV in English Wikipedia had been a redirect with 2 to 12 views a month for years.
 - **Median monthly views** are the median over months with data. This is the size of the Audience, in views a month.
 
 Only the Window's months are fetched, and the current, incomplete month is never used. Data begins in July 2015.
@@ -100,5 +101,7 @@ Everything else goes to the `not enough evidence` group, which is never ranked: 
 - **Interest is not willingness to pay.** Views show what people look up, not what they would buy or use.
 - **An Edition is a language, not a country.** Polish Wikipedia's readers include Poles abroad and everyone else who reads Polish. English Wikipedia's readers are worldwide.
 - Growth isn't corrected for season; the seasonality Check reports the risk instead.
+- An Article renamed onto a title that already had a page with steady views keeps that page's views as its early history, so Full history can miss the rename. Ukrainian Wikipedia's Eurovision Article is one case: in April 2026 it was moved onto the title of an older page, which had 34 to 262 views a month.
+- The other way round, an Article that already existed and grew more than 20 times within the Window loses its early months as a "trickle". It then fails Full history, and Growth is measured from the first month over the 5% line. None of the calibration Baskets did this. In large language model's takeoff (2022-09 to 2024-08), the trimmed months were stubs and redirects from before the Articles were written.
 - The Basket is only the linked Article and those the agent adds. Redirects, related Articles and sub-topics aren't counted automatically, so a narrow Article can understate a broad Topic.
 - There is no forecast. The Verdict describes the Window that was analysed.

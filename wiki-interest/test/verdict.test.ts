@@ -212,6 +212,27 @@ describe("Checks", () => {
     expect(stdout).toMatch(/^ {2}- Full history: Астрономія has data only from 2025-03, .*2024-09.*created or renamed/m);
   });
 
+  // Calibration (ticket 10): Leo XIV in en was a redirect with 2 to 12 views a month for years before the Article
+  // was created, so every month had "data" and Full history passed.
+  test("Full history starts an Article at its first month with at least 5% of its usual views, not at a redirect's trickle", async () => {
+    const { stdout, basket } = await analyze((month) => (month < "2025-03" ? 5 : 2_000));
+
+    expect(basket.verdict).toMatchObject({ direction: "flat", confidence: "medium", failedChecks: [{ check: "full-history" }] });
+    expect(stdout).toMatch(/^ {2}- Full history: Астрономія has data only from 2025-03, /m);
+  });
+
+  test("Enough data ignores a redirect's trickle when counting months with data", async () => {
+    const { basket } = await analyze((month) => (month < "2025-06" ? 5 : 2_000));
+
+    expect(basket.verdict).toMatchObject({ direction: null, confidence: "insufficient", failedChecks: [{ check: "enough-data" }] });
+  });
+
+  test("A month just over 5% of the Article's usual views counts as data", async () => {
+    const { basket } = await analyze((month) => (month < "2025-03" ? 110 : 2_000));
+
+    expect(basket.verdict.failedChecks.map((failed: { check: string }) => failed.check)).not.toContain("full-history");
+  });
+
   test.each([
     { months: 6, halves: "2026-03 to 2026-05 with 2026-06 to 2026-08", suggested: 24 },
     { months: 40, halves: "2023-05 to 2024-12 with 2025-01 to 2026-08", suggested: 48 },
