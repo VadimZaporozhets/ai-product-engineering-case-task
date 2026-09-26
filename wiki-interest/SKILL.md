@@ -31,9 +31,9 @@ node scripts/wiki-interest.js analyze --topics Q333 --editions uk [--months 24] 
 - `--months`: Window length, at least 2; 24 when the user names no span.
 - `--end`: last month of the Window as `YYYY-MM`; defaults to the last complete month.
 
-The output starts with a `rerun:` line holding the exact command with an explicit end month. For a follow-up ("make it 12 months"), edit that line and run it again. Then comes one row per Topic and Edition: median monthly views, views per million Edition views (Share of edition), Growth and Raw change (second half of the Window against the first). The full Run is saved as JSON; its path is on the `run file:` line.
+The output starts with a `rerun:` line holding the exact command with an explicit end month. For a follow-up ("make it 12 months"), edit that line and run it again. Then comes one row per Topic and Edition: Direction (growing, flat, declining, or none), Confidence (high, medium, low, insufficient), Growth and Raw change (second half of the Window against the first), median monthly views, and views per million Edition views (Share of edition). Under `reasons:` each Topic and Edition with lowered Confidence lists one Reason per failed Check. The full Run is saved as JSON; its path is on the `run file:` line.
 
-Quote numbers from the output only. Never compute or estimate them yourself.
+Quote numbers from the output only. Never compute or estimate them yourself. Always state the Confidence and its Reasons along with the Direction.
 
 ## Exit codes
 

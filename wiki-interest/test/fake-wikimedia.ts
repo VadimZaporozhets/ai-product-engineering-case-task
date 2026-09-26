@@ -15,6 +15,8 @@ type FakeArticle = {
   series: MonthlySeries;
   /** Daily views by "YYYY-MM-DD" that replace the evenly spread figure (0 removes the day). */
   days: Record<string, number>;
+  /** Daily views by "YYYY-MM-DD" added on top of that day's figure, e.g. a news Spike. */
+  extra: Record<string, number>;
   /** Answer every request for this Article with this HTTP status instead of data. */
   status?: number;
 };
@@ -53,9 +55,14 @@ export function fakeWikimedia() {
       edition: string,
       title: string,
       series: MonthlySeries,
-      options: { days?: Record<string, number>; status?: number } = {},
+      options: { days?: Record<string, number>; extra?: Record<string, number>; status?: number } = {},
     ) {
-      articles.set(`${edition}:${title}`, { series, days: options.days ?? {}, status: options.status });
+      articles.set(`${edition}:${title}`, {
+        series,
+        days: options.days ?? {},
+        extra: options.extra ?? {},
+        status: options.status,
+      });
       return fake;
     },
 
@@ -118,7 +125,7 @@ function perArticle(path: string[], articles: Map<string, FakeArticle>): Respons
   const items = [];
   if (article) {
     for (const day of daysBetween(start!, end!)) {
-      const views = article.days[day] ?? spreadOverMonth(article.series, day);
+      const views = (article.days[day] ?? spreadOverMonth(article.series, day)) + (article.extra[day] ?? 0);
       if (views > 0) {
         items.push({
           project: `${edition}.wikipedia`,

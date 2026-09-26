@@ -18,8 +18,8 @@ export type WikidataItem = {
   articles: Record<string, string | undefined>;
 };
 
-/** Monthly figures for one Article. Months without a single day of views are absent from the map. */
-export type MonthlyViews = Map<string, number>;
+/** Daily figures for one Article, by "YYYY-MM-DD". Days the API leaves out are absent from the map. */
+export type DailyViews = Map<string, number>;
 
 export class RequestFailed extends Error {}
 
@@ -45,24 +45,20 @@ export async function fetchItem(fetch: Fetch, id: string, editions: string[]): P
   };
 }
 
-/** Daily human views of an Article over whole months, summed per month. */
+/** Daily human views of an Article over whole months. */
 export async function fetchArticleViews(
   fetch: Fetch,
   edition: string,
   title: string,
   start: string,
   end: string,
-): Promise<MonthlyViews> {
+): Promise<DailyViews> {
   const article = encodeURIComponent(title.replaceAll(" ", "_"));
   const url = `${PAGEVIEWS_API}/per-article/${project(edition)}/all-access/user/${article}/daily/${firstDay(start)}/${lastDay(end)}`;
   const body = (await getJson(fetch, url, { notFoundIsEmpty: true })) as PageviewItems;
-  // Days the API leaves out count as zero views; a month with no days at all has no data.
-  const monthly: MonthlyViews = new Map();
-  for (const item of body.items ?? []) {
-    const month = monthOfTimestamp(item.timestamp);
-    monthly.set(month, (monthly.get(month) ?? 0) + item.views);
-  }
-  return monthly;
+  const daily: DailyViews = new Map();
+  for (const item of body.items ?? []) daily.set(dayOfTimestamp(item.timestamp), item.views);
+  return daily;
 }
 
 /** Monthly human views of a whole Edition, for every month from start to end. */
@@ -117,9 +113,14 @@ function lastDay(month: string): string {
   return `${month.replace("-", "")}${String(daysInMonth(month)).padStart(2, "0")}`;
 }
 
+/** "YYYY-MM-DD" of an API timestamp (YYYYMMDDHH). */
+function dayOfTimestamp(timestamp: string): string {
+  return `${timestamp.slice(0, 4)}-${timestamp.slice(4, 6)}-${timestamp.slice(6, 8)}`;
+}
+
 /** "YYYY-MM" of an API timestamp (YYYYMMDDHH). */
 function monthOfTimestamp(timestamp: string): string {
-  return `${timestamp.slice(0, 4)}-${timestamp.slice(4, 6)}`;
+  return dayOfTimestamp(timestamp).slice(0, 7);
 }
 
 type WbGetEntities = {

@@ -1,32 +1,10 @@
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { EXIT_CODES, main } from "../src/cli.ts";
-import { fakeWikimedia, type FakeWikimedia } from "./fake-wikimedia.ts";
-
-const SEPT_26_2026 = new Date("2026-09-26T11:00:00Z");
-
-async function run(argv: string[], fake: FakeWikimedia, options: { now?: Date; outputDir?: string } = {}) {
-  let stdout = "";
-  const outputDir = options.outputDir ?? mkdtempSync(join(tmpdir(), "wiki-interest-out-"));
-  const code = await main(argv, {
-    fetch: fake.fetch,
-    now: () => options.now ?? SEPT_26_2026,
-    cacheDir: mkdtempSync(join(tmpdir(), "wiki-interest-cache-")),
-    outputDir,
-    stdout: { write: (chunk: string) => (stdout += chunk) },
-  });
-  return { code, stdout, outputDir };
-}
-
-function astronomyInUkrainian() {
-  return fakeWikimedia().item("Q333", {
-    label: "astronomy",
-    description: "natural science studying celestial objects",
-    articles: { uk: "Астрономія", en: "Astronomy" },
-  });
-}
+import { EXIT_CODES } from "../src/cli.ts";
+import { fakeWikimedia } from "./fake-wikimedia.ts";
+import { astronomyInUkrainian, run, runJson } from "./run-cli.ts";
 
 describe("analyze one Topic in one Edition", () => {
   test("prints the rerun line in resolved form and one result row", async () => {
@@ -42,7 +20,8 @@ describe("analyze one Topic in one Edition", () => {
     expect(stdout).toMatch(/^rerun: node .*wiki-interest\.js.? analyze --topics Q333 --editions uk --months 24 --end 2026-08$/m);
     // Median of 12 × 1,000 and 12 × 1,500 = 1,250. Views per million = 30,000 / 3.6e9 × 1e6.
     // Growth = (7.5 per million) / (10 per million) − 1. Raw change = 1,500 / 1,000 − 1.
-    expect(stdout).toContain("| astronomy (Q333) | uk | 1250 | 8.33 | -25.0% | +50.0% |");
+    // Declining, with medium Confidence: raw views point the opposite way, failing the Agreement Check.
+    expect(stdout).toContain("| astronomy (Q333) | uk | declining | medium | -25.0% | +50.0% | 1250 | 8.33 |");
   });
 
   test("fetches human daily views and monthly Edition totals for exactly the given Window", async () => {
@@ -91,7 +70,7 @@ describe("analyze one Topic in one Edition", () => {
     // First half: 6 months with data, 5 × 3,000 + 2,000 = 17,000 views → 28.33 per million.
     // Second half: 12 × 3,000 = 36,000 views → 30 per million. Growth = 30 / 28.33 − 1.
     // Views per million over the 18 months with data = 53,000 / 1.8e9 × 1e6.
-    expect(stdout).toContain("| astronomy (Q333) | uk | 3000 | 29.44 | +5.9% | +5.9% |");
+    expect(stdout).toContain("| astronomy (Q333) | uk | flat | medium | +5.9% | +5.9% | 3000 | 29.44 |");
   });
 
   test("counts a month without views after the Article's first data as a month with zero views", async () => {
@@ -104,7 +83,7 @@ describe("analyze one Topic in one Edition", () => {
 
     // First half: 5,000 views over 6 months → 8.33 per million; second half: 6,000 → 10 per million.
     // Views per million over all 12 months = 11,000 / 1.2e9 × 1e6.
-    expect(stdout).toContain("| astronomy (Q333) | uk | 1000 | 9.17 | +20.0% | +20.0% |");
+    expect(stdout).toContain("| astronomy (Q333) | uk | growing | low | +20.0% | +20.0% | 1000 | 9.17 |");
   });
 
   test("leaves the middle month out of both halves of an odd-length Window", async () => {
@@ -122,7 +101,7 @@ describe("analyze one Topic in one Edition", () => {
     const { stdout } = await run(["analyze", "--topics", "Q333", "--editions", "uk", "--months", "5"], fake);
 
     // Halves are 2026-04..05 and 2026-07..08. Median of the five months = 2,000.
-    expect(stdout).toContain("| astronomy (Q333) | uk | 2000 | 30.00 | +100.0% | +100.0% |");
+    expect(stdout).toContain("| astronomy (Q333) | uk | growing | low | +100.0% | +100.0% | 2000 | 30.00 |");
   });
 
   test("takes the median over months with data only, and shows no Growth when a half has none", async () => {
@@ -133,7 +112,7 @@ describe("analyze one Topic in one Edition", () => {
 
     const { stdout } = await run(["analyze", "--topics", "Q333", "--editions", "uk", "--months", "12"], fake);
 
-    expect(stdout).toContain("| astronomy (Q333) | uk | 500 | 5.00 | n/a | n/a |");
+    expect(stdout).toContain("| astronomy (Q333) | uk | none | insufficient | n/a | n/a | 500 | 5.00 |");
   });
 
   test("blocks the Run when the Wikidata item has no Article in the Edition", async () => {
@@ -167,8 +146,7 @@ describe("analyze one Topic in one Edition", () => {
 
     expect(code).toBe(EXIT_CODES.partialFailure);
     expect(stdout).toMatch(/^\| astronomy \(Q333\) \| uk \| error: .*HTTP 50\d/m);
-    const runFile = stdout.match(/^run file: (.+)$/m)![1]!;
-    const [basket] = JSON.parse(readFileSync(runFile, "utf8")).baskets;
+    const [basket] = runJson(stdout).baskets;
     expect(basket.error).toMatch(/HTTP 50\d/);
   });
 
@@ -262,7 +240,7 @@ describe("analyze one Topic in one Edition", () => {
     for (const { stdout } of [first, second]) {
       const runFile = stdout.match(/^run file: (.+)$/m)![1]!;
       expect(runFile.startsWith(join(outputDir, "wiki-interest-runs"))).toBe(true);
-      const saved = JSON.parse(readFileSync(runFile, "utf8"));
+      const saved = runJson(stdout);
       expect(saved.request).toMatchObject({
         topics: ["Q333"],
         editions: ["uk"],
