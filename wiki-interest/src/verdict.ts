@@ -46,6 +46,22 @@ export function judge(metrics: Metrics, window: Window): Verdict {
   return { direction, confidence, failedChecks };
 }
 
+/** A Missing article fails Enough data: there are no views to judge (ADR 0002). */
+export function missingArticleVerdict(edition: string): Verdict {
+  return {
+    direction: null,
+    confidence: "insufficient",
+    failedChecks: [
+      {
+        check: "enough-data",
+        reason:
+          `Enough data: no ${edition} Wikipedia Article is linked to this Topic's Wikidata item (a Missing article), ` +
+          "so there are no views to judge.",
+      },
+    ],
+  };
+}
+
 function directionOf(change: number): Direction {
   if (change > THRESHOLDS.flatBand) return "growing";
   if (change < -THRESHOLDS.flatBand) return "declining";

@@ -115,14 +115,19 @@ describe("analyze one Topic in one Edition", () => {
     expect(stdout).toContain("| astronomy (Q333) | uk | none | insufficient | n/a | n/a | 500 | 5.00 |");
   });
 
-  test("blocks the Run when the Wikidata item has no Article in the Edition", async () => {
-    const fake = astronomyInUkrainian().editionTotals("pl", () => 100_000_000);
+  test("refuses an unknown Edition code before any Wikidata or Article request", async () => {
+    const fake = astronomyInUkrainian()
+      .editionTotals("uk", () => 100_000_000)
+      .article("uk", "Астрономія", () => 3_000);
 
-    const { code, stdout, outputDir } = await run(["analyze", "--topics", "Q333", "--editions", "pl"], fake);
+    const { code, stdout, outputDir } = await run(["analyze", "--topics", "Q333", "--editions", "uk,xx"], fake);
 
     expect(code).toBe(EXIT_CODES.blocked);
-    expect(stdout).toContain("blocked: astronomy (Q333) has no Article in pl Wikipedia");
-    expect(fake.pageviewRequests()).toEqual([]);
+    expect(stdout).toMatch(/^blocked: unknown Edition code: xx\. Wikimedia has no pageviews for xx\.wikipedia\.org/m);
+    expect(fake.requests.map((url) => url.pathname)).toEqual([
+      "/api/rest_v1/metrics/pageviews/aggregate/uk.wikipedia.org/all-access/user/monthly/20240901/20260831",
+      "/api/rest_v1/metrics/pageviews/aggregate/xx.wikipedia.org/all-access/user/monthly/20240901/20260831",
+    ]);
     expect(readdirSync(outputDir)).toEqual([]);
   });
 
@@ -159,16 +164,6 @@ describe("analyze one Topic in one Edition", () => {
     expect(stdout).toContain("| Q333 | uk | error: Wikidata lookup failed: www.wikidata.org answered HTTP 503 |");
   });
 
-  test("refuses a Topic given by name, asking for a Wikidata item id", async () => {
-    const fake = astronomyInUkrainian();
-
-    const { code, stdout } = await run(["analyze", "--topics", "astronomy", "--editions", "uk"], fake);
-
-    expect(code).toBe(EXIT_CODES.blocked);
-    expect(stdout).toMatch(/^blocked: .*"astronomy".*Wikidata item id/m);
-    expect(fake.requests).toEqual([]);
-  });
-
   test("refuses something that isn't an Edition code", async () => {
     const fake = astronomyInUkrainian();
 
@@ -187,7 +182,7 @@ describe("analyze one Topic in one Edition", () => {
   });
 
   test("blocks the Run when the Wikidata item doesn't exist", async () => {
-    const fake = fakeWikimedia();
+    const fake = fakeWikimedia().editionTotals("uk", () => 100_000_000);
 
     const { code, stdout } = await run(["analyze", "--topics", "Q999999999", "--editions", "uk"], fake);
 

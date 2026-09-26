@@ -3,7 +3,10 @@
 export const EXIT_CODES = {
   /** The Run completed. Missing articles and insufficient Confidence are findings, not failures. */
   success: 0,
-  /** The Run completed, but requests for some Baskets failed; they are shown as error rows. */
+  /**
+   * The Run completed, but some requests failed: Baskets shown as error rows, or a Missing article whose candidate
+   * search failed. Also `resolve` when Wikidata can't be reached.
+   */
   partialFailure: 2,
   /** No Run was made: invalid input, or a Topic that can't be analysed as asked. */
   blocked: 3,
