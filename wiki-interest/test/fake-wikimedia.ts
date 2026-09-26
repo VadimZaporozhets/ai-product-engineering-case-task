@@ -32,6 +32,8 @@ export function fakeWikimedia() {
   const items = new Map<string, FakeItem>();
   const totals = new Map<string, FakeTotals>();
   const articles = new Map<string, FakeArticle>();
+  /** Redirect targets by "edition:title". */
+  const redirects = new Map<string, string>();
   /** Item ids a Wikidata name search finds, by name. */
   const searches = new Map<string, string[]>();
   const requests: URL[] = [];
@@ -81,6 +83,12 @@ export function fakeWikimedia() {
       return fake;
     },
 
+    /** A title in an Edition that redirects to another Article. */
+    redirect(edition: string, from: string, to: string) {
+      redirects.set(`${edition}:${from}`, to);
+      return fake;
+    },
+
     fetch: async (input: string | URL, init?: RequestInit): Promise<Response> => {
       const url = new URL(input);
       requests.push(url);
@@ -96,6 +104,9 @@ export function fakeWikimedia() {
         if (action === "wbsearchentities") return wbsearchentities(url, items, searches);
         if (action === "wbgetclaims") return wbgetclaims(url, items);
         throw new Error(`fake-wikimedia: unexpected Wikidata request ${url}`);
+      }
+      if (url.hostname.endsWith(".wikipedia.org") && url.searchParams.has("titles")) {
+        return pageInfo(url, articles, redirects);
       }
       if (url.hostname.endsWith(".wikipedia.org") && url.searchParams.get("list") === "search") {
         // An Edition's own search, run for a Missing article; the fake finds nothing.
@@ -157,6 +168,26 @@ function wbgetclaims(url: URL, items: Map<string, FakeItem>): Response {
   return json(200, { claims: { P31 } });
 }
 
+/**
+ * An Edition's page info for one title, following redirects (action=query&titles=…&redirects=1&formatversion=2).
+ * A title is an Article when the test declared its views; like MediaWiki, it's normalized first.
+ */
+function pageInfo(url: URL, articles: Map<string, FakeArticle>, redirects: Map<string, string>): Response {
+  const edition = url.hostname.replace(".wikipedia.org", "");
+  const given = url.searchParams.get("titles")!;
+  if (/[[\]{}|#<>]/.test(given)) {
+    return json(200, { query: { pages: [{ title: given, invalid: true, invalidreason: "contains invalid characters" }] } });
+  }
+  const title = given.replaceAll("_", " ").replace(/^./, (first) => first.toUpperCase());
+  const query: Record<string, unknown> = {};
+  if (title !== given) query.normalized = [{ from: given, to: title }];
+  const target = redirects.get(`${edition}:${title}`);
+  if (target) query.redirects = [{ from: title, to: target }];
+  const page = target ?? title;
+  query.pages = [articles.has(`${edition}:${page}`) ? { pageid: 1, ns: 0, title: page } : { ns: 0, title: page, missing: true }];
+  return json(200, { batchcomplete: true, query });
+}
+
 // /api/rest_v1/metrics/pageviews/per-article/{project}/{access}/{agent}/{article}/daily/{start}/{end}
 function perArticle(path: string[], articles: Map<string, FakeArticle>): Response {
   const [, , , , , , project, access, agent, title, granularity, start, end] = path;
@@ -164,7 +195,8 @@ function perArticle(path: string[], articles: Map<string, FakeArticle>): Respons
     throw new Error(`fake-wikimedia: unexpected filters ${path.join("/")}`);
   }
   const edition = project!.replace(".wikipedia.org", "");
-  const article = articles.get(`${edition}:${title}`);
+  // The path writes spaces in the title as underscores.
+  const article = articles.get(`${edition}:${title!.replaceAll("_", " ")}`);
   if (article?.status) return json(article.status, { title: "Error", status: article.status });
 
   const items = [];

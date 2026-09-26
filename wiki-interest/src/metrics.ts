@@ -38,7 +38,14 @@ export type Metrics = {
   firstMonths: { article: string; month: string | null }[];
 };
 
-export type Half = { start: string; end: string; months: number; monthsWithData: number };
+export type Half = {
+  start: string;
+  end: string;
+  months: number;
+  monthsWithData: number;
+  /** Share of edition over the half's months with data, in views per million; null when it has none. */
+  viewsPerMillion: number | null;
+};
 
 /** A Basket's monthly rows over the Window's months and its Metrics, from its Articles' daily views and its Edition's totals. */
 export function measureBasket(
@@ -72,14 +79,15 @@ function computeMetrics(rows: MonthRow[], articles: ArticleViews[], firstMonths:
   const second = secondHalf.filter((row) => row.hasData);
   const topDays = highestDays(articles, THRESHOLDS.spikeDays);
   const windowViews = sum(rows.map((row) => row.views));
+  const halves = { first: half(firstHalf, first), second: half(secondHalf, second) };
 
   return {
     monthsWithData: withData.length,
     medianMonthlyViews: withData.length > 0 ? median(withData.map((row) => row.views)) : null,
     viewsPerMillion: shareOfEdition(withData),
-    growth: change(shareOfEdition(first), shareOfEdition(second)),
+    growth: change(halves.first.viewsPerMillion, halves.second.viewsPerMillion),
     rawChange: change(averageViews(first), averageViews(second)),
-    halves: { first: half(firstHalf, first), second: half(secondHalf, second) },
+    halves,
     mannKendall: mannKendall(withData.map((row) => shareOfEdition([row]) ?? 0)),
     topDays,
     topDaysShare: windowViews > 0 ? sum(topDays.map((day) => day.views)) / windowViews : null,
@@ -125,7 +133,13 @@ function change(before: number | null, after: number | null): number | null {
 }
 
 function half(months: MonthRow[], withData: MonthRow[]): Half {
-  return { start: months[0]!.month, end: months.at(-1)!.month, months: months.length, monthsWithData: withData.length };
+  return {
+    start: months[0]!.month,
+    end: months.at(-1)!.month,
+    months: months.length,
+    monthsWithData: withData.length,
+    viewsPerMillion: shareOfEdition(withData),
+  };
 }
 
 function median(values: number[]): number {

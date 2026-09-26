@@ -5,9 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import type { Fetch } from "../src/http.ts";
+import { monthsFrom } from "../src/months.ts";
 import { fakeWikimedia } from "./fake-wikimedia.ts";
 
 const SEPT_26_2026 = new Date("2026-09-26T11:00:00Z");
+
+/** The default Window on 2026-09-26: 2024-09..2026-08. */
+export const WINDOW_24 = { start: "2024-09", months: 24 };
+export const EDITION_VIEWS = 100_000_000;
+
+/** Views on a straight line from `from` in the Window's first month to `to` in its last, rounded. */
+export function linear(from: number, to: number, window: { start: string; months: number } = WINDOW_24) {
+  return (month: string) => Math.round(from + ((to - from) * monthsFrom(window.start, month)) / (window.months - 1));
+}
 
 export async function run(
   argv: string[],

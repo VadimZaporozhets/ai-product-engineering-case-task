@@ -13,6 +13,8 @@ const MAX_SEARCH_RESULTS = 50;
 const DISAMBIGUATION_PAGE = "Q4167410";
 /** Hosts under wikipedia.org that aren't a language Edition. */
 const NOT_AN_EDITION = new Set(["abstract.wikipedia.org"]);
+/** MediaWiki's namespace of Articles, as opposed to talk, user or category pages. */
+const ARTICLE_NAMESPACE = 0;
 
 export type WikidataItem = {
   id: string;
@@ -91,6 +93,32 @@ export async function searchArticles(http: Http, edition: string, term: string, 
   });
   const body = (await http.getJson(url)) as SearchResults;
   return (body.query?.search ?? []).map((result) => result.title);
+}
+
+export type ArticleLookup =
+  /** The Article exists, under this title as the Edition writes it (e.g. with a capital first letter). */
+  | { kind: "article"; title: string }
+  | { kind: "missing" }
+  /** The title only redirects to another Article, whose views it doesn't count. */
+  | { kind: "redirect"; target: string }
+  | { kind: "invalid"; reason: string };
+
+/** Whether a title is an Article in an Edition. */
+export async function lookupArticle(http: Http, edition: string, title: string): Promise<ArticleLookup> {
+  const url = apiUrl(`https://${project(edition)}/w/api.php`, {
+    action: "query",
+    titles: title,
+    redirects: "1",
+    formatversion: "2",
+  });
+  const body = (await http.getJson(url)) as PageInfo;
+  const page = body.query?.pages?.[0];
+  if (!page) throw new RequestFailed(`${project(edition)} sent no page for "${title}"`);
+  if (page.invalid) return { kind: "invalid", reason: page.invalidreason ?? "not a valid title" };
+  if (page.missing) return { kind: "missing" };
+  if (page.ns !== ARTICLE_NAMESPACE) return { kind: "invalid", reason: "it is a page of another namespace" };
+  if (body.query?.redirects?.length) return { kind: "redirect", target: page.title };
+  return { kind: "article", title: page.title };
 }
 
 /** Daily human views of an Article over whole months. */
@@ -189,6 +217,13 @@ type WbSearchEntities = {
 
 type WbGetClaims = {
   claims?: Record<string, { mainsnak?: { datavalue?: { value?: { id?: string } } } }[]>;
+};
+
+type PageInfo = {
+  query?: {
+    redirects?: { from: string; to: string }[];
+    pages?: { title: string; ns?: number; missing?: boolean; invalid?: boolean; invalidreason?: string }[];
+  };
 };
 
 type SearchResults = { query?: { search?: { title: string }[] } };
