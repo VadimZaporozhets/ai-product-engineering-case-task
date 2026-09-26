@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.ts";
-import { basketMonths, computeMetrics, type Metrics, type MonthRow } from "./metrics.ts";
+import { signedPercent } from "./format.ts";
+import { measureBasket, type Metrics, type MonthRow } from "./metrics.ts";
 import { monthRange } from "./months.ts";
 import { createRunFolder, writeRunJson } from "./run-files.ts";
+import { judge, type Verdict } from "./verdict.ts";
 import { resolveWindow } from "./window.ts";
 import {
   fetchArticleViews,
@@ -57,6 +59,7 @@ type Basket = {
   articles: string[];
   monthly: MonthRow[];
   metrics?: Metrics;
+  verdict?: Verdict;
   error?: string;
 };
 
@@ -145,8 +148,8 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
         basket.error = views.message;
         continue;
       }
-      basket.monthly = basketMonths(months, [views], editionTotals);
-      basket.metrics = computeMetrics(basket.monthly);
+      const { monthly, metrics } = measureBasket(months, [{ title, daily: views }], editionTotals);
+      Object.assign(basket, { monthly, metrics, verdict: judge(metrics, window) });
     }
   }
 
@@ -170,9 +173,11 @@ async function analyze(argv: string[], deps: Dependencies): Promise<ExitCode> {
       ...editions.map((edition) => `  ${edition}: ${item.articles[edition]}`),
     ]),
     "",
-    "| Topic | Edition | Median monthly views | Views per million | Growth | Raw change |",
-    "|---|---|---|---|---|---|",
+    "| Topic | Edition | Direction | Confidence | Growth | Raw change | Median monthly views | Views per million |",
+    "|---|---|---|---|---|---|---|---|",
     ...baskets.map((basket) => resultRow(basket, items)),
+    "",
+    ...reasonLines(baskets, items),
     "",
     `run file: ${runFile}`,
   ];
@@ -191,24 +196,42 @@ async function settle<T>(request: Promise<T>, context: string): Promise<T | Requ
 }
 
 function resultRow(basket: Basket, items: WikidataItem[]): string {
-  const item = items.find((candidate) => candidate.id === basket.topic);
-  const topic = item?.label ? `${item.label} (${basket.topic})` : basket.topic;
-  const metrics = basket.metrics;
-  if (basket.error || !metrics) return `| ${topic} | ${basket.edition} | error: ${basket.error} | | | |`;
+  const topic = topicName(basket, items);
+  const { metrics, verdict } = basket;
+  if (basket.error || !metrics || !verdict) return `| ${topic} | ${basket.edition} | error: ${basket.error} | | | | | |`;
   const cells = [
     topic,
     basket.edition,
-    metrics.medianMonthlyViews === null ? "n/a" : String(Math.round(metrics.medianMonthlyViews)),
-    metrics.viewsPerMillion === null ? "n/a" : metrics.viewsPerMillion.toFixed(2),
+    verdict.direction ?? "none",
+    verdict.confidence,
     percent(metrics.growth),
     percent(metrics.rawChange),
+    metrics.medianMonthlyViews === null ? "n/a" : String(Math.round(metrics.medianMonthlyViews)),
+    metrics.viewsPerMillion === null ? "n/a" : metrics.viewsPerMillion.toFixed(2),
   ];
   return `| ${cells.join(" | ")} |`;
 }
 
+/** The Reason of every failed Check, grouped under its Basket. */
+function reasonLines(baskets: Basket[], items: WikidataItem[]): string[] {
+  const lines = baskets.flatMap((basket) =>
+    basket.verdict?.failedChecks.length
+      ? [
+          `${topicName(basket, items)} in ${basket.edition}, ${basket.verdict.confidence} Confidence:`,
+          ...basket.verdict.failedChecks.map((failed) => `  - ${failed.reason}`),
+        ]
+      : [],
+  );
+  return lines.length === 0 ? ["reasons: none, every Check passed"] : ["reasons:", ...lines];
+}
+
+function topicName(basket: { topic: string }, items: WikidataItem[]): string {
+  const item = items.find((candidate) => candidate.id === basket.topic);
+  return item?.label ? `${item.label} (${basket.topic})` : basket.topic;
+}
+
 function percent(value: number | null): string {
-  if (value === null) return "n/a";
-  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`;
+  return value === null ? "n/a" : signedPercent(value);
 }
 
 function blocked(deps: Dependencies, message: string): ExitCode {
