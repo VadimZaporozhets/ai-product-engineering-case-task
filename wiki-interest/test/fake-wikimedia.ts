@@ -9,6 +9,8 @@ type FakeItem = {
   description: string;
   /** Article title per Edition code. */
   articles: Record<string, string>;
+  /** Instance of Wikimedia disambiguation page. */
+  disambiguation?: boolean;
 };
 
 type FakeArticle = {
@@ -23,12 +25,12 @@ type FakeArticle = {
 
 type FakeTotals = { series: MonthlySeries; status?: number };
 
-export type FakeWikimedia = ReturnType<typeof fakeWikimedia>;
-
 export function fakeWikimedia() {
   const items = new Map<string, FakeItem>();
   const totals = new Map<string, FakeTotals>();
   const articles = new Map<string, FakeArticle>();
+  /** Item ids a Wikidata name search finds, by name. */
+  const searches = new Map<string, string[]>();
   const requests: URL[] = [];
   let wikidataStatus: number | undefined;
 
@@ -37,6 +39,12 @@ export function fakeWikimedia() {
 
     item(id: string, item: FakeItem) {
       items.set(id, item);
+      return fake;
+    },
+
+    /** Wikidata's search for this name finds these items, in this order; each matches by its label. */
+    search(name: string, ids: string[]) {
+      searches.set(name, ids);
       return fake;
     },
 
@@ -70,7 +78,12 @@ export function fakeWikimedia() {
       const url = new URL(input);
       requests.push(url);
       if (url.hostname === "www.wikidata.org") {
-        return wikidataStatus ? json(wikidataStatus, { error: "fake failure" }) : wbgetentities(url, items);
+        if (wikidataStatus) return json(wikidataStatus, { error: "fake failure" });
+        const action = url.searchParams.get("action");
+        if (action === "wbgetentities") return wbgetentities(url, items);
+        if (action === "wbsearchentities") return wbsearchentities(url, items, searches);
+        if (action === "wbgetclaims") return wbgetclaims(url, items);
+        throw new Error(`fake-wikimedia: unexpected Wikidata request ${url}`);
       }
       const path = url.pathname.split("/").map(decodeURIComponent);
       if (url.hostname === "wikimedia.org" && path[5] === "per-article") return perArticle(path, articles);
@@ -79,16 +92,13 @@ export function fakeWikimedia() {
     },
 
     /** Pageview requests (per-article and aggregate) made so far. */
-    pageviewRequests() {
-      return requests.filter((url) => url.hostname === "wikimedia.org");
-    },
+    pageviewRequests: () => pageviewRequests(requests),
   };
   return fake;
 }
 
 function wbgetentities(url: URL, items: Map<string, FakeItem>): Response {
   const ids = (url.searchParams.get("ids") ?? "").split("|");
-  const sites = (url.searchParams.get("sitefilter") ?? "").split("|");
   const entities: Record<string, unknown> = {};
   for (const id of ids) {
     const item = items.get(id);
@@ -96,10 +106,14 @@ function wbgetentities(url: URL, items: Map<string, FakeItem>): Response {
       entities[id] = { id, missing: "" };
       continue;
     }
-    const sitelinks: Record<string, unknown> = {};
+    // Like the real API, every sitelink, with its URL; Commons stands in for the links that aren't Wikipedias.
+    const sitelinks: Record<string, unknown> = {
+      commonswiki: { site: "commonswiki", title: `Category:${item.label}`, badges: [], url: "https://commons.wikimedia.org/" },
+    };
     for (const [edition, title] of Object.entries(item.articles)) {
       const site = `${edition.replaceAll("-", "_")}wiki`;
-      if (sites.includes(site)) sitelinks[site] = { site, title, badges: [] };
+      const url = `https://${edition}.wikipedia.org/wiki/${encodeURIComponent(title.replaceAll(" ", "_"))}`;
+      sitelinks[site] = { site, title, badges: [], url };
     }
     entities[id] = {
       type: "item",
@@ -110,6 +124,21 @@ function wbgetentities(url: URL, items: Map<string, FakeItem>): Response {
     };
   }
   return json(200, { entities, success: 1 });
+}
+
+function wbsearchentities(url: URL, items: Map<string, FakeItem>, searches: Map<string, string[]>): Response {
+  const ids = searches.get(url.searchParams.get("search") ?? "") ?? [];
+  const search = ids.map((id) => {
+    const { label, description } = items.get(id)!;
+    return { id, label, description, match: { type: "label", language: "en", text: label } };
+  });
+  return json(200, { searchinfo: { search: url.searchParams.get("search") }, search, success: 1 });
+}
+
+function wbgetclaims(url: URL, items: Map<string, FakeItem>): Response {
+  const item = items.get(url.searchParams.get("entity") ?? "");
+  const P31 = [{ mainsnak: { datavalue: { value: { id: item?.disambiguation ? "Q4167410" : "Q35120" } } } }];
+  return json(200, { claims: { P31 } });
 }
 
 // /api/rest_v1/metrics/pageviews/per-article/{project}/{access}/{agent}/{article}/daily/{start}/{end}
@@ -215,6 +244,10 @@ function notFound(): Response {
   });
 }
 
-function json(status: number, body: unknown): Response {
+export function pageviewRequests(requests: URL[]): URL[] {
+  return requests.filter((url) => url.hostname === "wikimedia.org");
+}
+
+export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }

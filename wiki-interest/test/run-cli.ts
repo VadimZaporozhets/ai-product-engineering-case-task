@@ -4,11 +4,12 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
-import { fakeWikimedia, type FakeWikimedia } from "./fake-wikimedia.ts";
+import type { Fetch } from "../src/wikimedia.ts";
+import { fakeWikimedia } from "./fake-wikimedia.ts";
 
 const SEPT_26_2026 = new Date("2026-09-26T11:00:00Z");
 
-export async function run(argv: string[], fake: FakeWikimedia, options: { now?: Date; outputDir?: string } = {}) {
+export async function run(argv: string[], fake: { fetch: Fetch }, options: { now?: Date; outputDir?: string } = {}) {
   let stdout = "";
   const outputDir = options.outputDir ?? mkdtempSync(join(tmpdir(), "wiki-interest-out-"));
   const code = await main(argv, {
