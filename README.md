@@ -227,6 +227,8 @@ The two failures led to one more round of changes, in code as well as instructio
 
 In the 9 answers to question 3 after that, every leader claim quoted with its figure was right, and both astronomy headlines kept "probably". But comparisons Haiku words on its own, like "the only stable one", were still false in 8 of those 9 answers. And on the current instructions, none of the 3 last runs of question 3 stayed within 4 tool calls, because the report headline ran over 90 characters and had to be retried. Both stay open limitations. No more output lines or rules fixed them; flagging such words for a human reader, the way numbers are flagged, is the likely next step.
 
+Also run once on **Gemini 3.6 Flash** (medium thinking) in Google Antigravity, with the same skill folder and task question 3 in Ukrainian: pass with two slips. Every figure matched the output, the proxy was stated, the PDF headline kept the required shape, and the Ukrainian was clean. The slips were the same kind Haiku makes: countries named in the next step, and one reason ("high relative share") applied to both recommended editions when only Vietnamese has it. One sample, so it shows the skill isn't tied to one vendor, not which model is better.
+
 ## Roadmap
 
 Each stage starts from a limitation found in this version and names the eval that would prove the stage works.
