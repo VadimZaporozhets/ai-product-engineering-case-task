@@ -1,4 +1,4 @@
-// Ranking of a Run's Baskets (spec "Ranking"): only Baskets with high or medium Confidence are ranked, so weak
+// Ranking of a Run's Baskets: only Baskets with high or medium Confidence are ranked, so weak
 // evidence never looks like the winner. Everything else goes to the Not-enough-evidence group.
 
 import type { Metrics } from "./metrics.ts";

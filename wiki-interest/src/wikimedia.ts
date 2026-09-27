@@ -1,5 +1,5 @@
 // Client for Wikidata and the Wikimedia pageviews API.
-// Traffic filters are fixed (spec "Data fetching"): human readers only, all access types.
+// Traffic filters are fixed: human readers only, all access types.
 
 import { RequestFailed, type Http } from "./http.ts";
 import { daysInMonth, monthRange } from "./months.ts";

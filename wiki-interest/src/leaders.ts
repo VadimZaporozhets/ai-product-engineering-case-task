@@ -1,4 +1,4 @@
-// The leaders of the ranked table (ADR 0003): which row has the most views, the highest Share of edition and the
+// The leaders of the ranked table: which row has the most views, the highest Share of edition and the
 // highest and lowest Growth. They are comparisons across rows, so the code makes them and the agent copies them.
 // Only ranked rows lead, so weak evidence never looks like the winner. The ranked rows are also grouped by Direction,
 // so a claim such as "the only stable one" is read from the output rather than worked out.

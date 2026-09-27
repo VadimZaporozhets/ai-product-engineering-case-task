@@ -1,4 +1,4 @@
-// Metrics of one Basket over the Window (spec "Metrics and Verdict", ADR 0001).
+// Metrics of one Basket over the Window.
 
 import { mannKendall, type MannKendall } from "./mann-kendall.ts";
 import { THRESHOLDS } from "./thresholds.ts";

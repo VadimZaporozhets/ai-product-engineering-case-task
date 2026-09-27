@@ -1,4 +1,4 @@
-// Every request to Wikimedia goes through here, following its API etiquette (spec "Data fetching"): a User-Agent
+// Every request to Wikimedia goes through here, following its API etiquette: a User-Agent
 // with contact information, which Wikimedia rate-limits 20 times less than an anonymous one; MediaWiki API calls
 // (Wikidata and each Edition's search) one at a time; at most 4 pageview requests in flight; and retries of
 // answers that may change on their own (HTTP 429 and 5xx).

@@ -1,4 +1,4 @@
-// The Report's fixed labels, in English and Ukrainian (spec "Report"). Any other Report language gets the English
+// The Report's fixed labels, in English and Ukrainian. Any other Report language gets the English
 // labels; the agent's Narrative stays in the language it was written in.
 
 import { ENGLISH_CHART_TEXT, type ChartText } from "./chart.ts";

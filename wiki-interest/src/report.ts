@@ -1,4 +1,4 @@
-// The Report's content (spec "Report", ADR 0003): everything but the Narrative comes from the Run file, so nothing
+// The Report's content: everything but the Narrative comes from the Run file, so nothing
 // in a shared document is made up.
 
 import { chartLines, renderChart, topicLabel, topicName, type ChartStyle } from "./chart.ts";

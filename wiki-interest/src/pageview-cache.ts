@@ -1,4 +1,4 @@
-// Permanent on-disk cache of pageviews (spec "Data fetching", ADR 0004): daily views per Article per month, and
+// Permanent on-disk cache of pageviews: daily views per Article per month, and
 // total views per Edition per month. Complete months never change, so entries never expire, and a Run fetches
 // only the months it doesn't have. Wikidata and search responses are never cached: they can change.
 

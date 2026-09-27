@@ -1,5 +1,5 @@
 // The Verdict of one Basket: a Direction read from Growth, and a Confidence set by the Checks,
-// with a plain-language Reason for each failed Check (spec "Metrics and Verdict", ADRs 0003 and 0007).
+// with a plain-language Reason for each failed Check.
 
 import { percent, signedPercent } from "./format.ts";
 import type { Half, Metrics } from "./metrics.ts";
@@ -46,7 +46,7 @@ export function judge(metrics: Metrics, window: Window): Verdict {
   return { direction, confidence, failedChecks };
 }
 
-/** A Missing article fails Enough data: there are no views to judge (ADR 0002). */
+/** A Missing article fails Enough data: there are no views to judge. */
 export function missingArticleVerdict(edition: string): Verdict {
   return {
     direction: null,

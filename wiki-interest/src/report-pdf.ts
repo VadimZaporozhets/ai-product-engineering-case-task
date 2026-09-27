@@ -1,4 +1,4 @@
-// Lays out the one-page A4 Report with pdfkit (spec "Report", ADR 0006). The chart goes in as vector graphics
+// Lays out the one-page A4 Report with pdfkit. The chart goes in as vector graphics
 // through svg-to-pdfkit. Every piece of text uses the bundled Noto Sans, the chart's text included, because the
 // standard PDF fonts have no Cyrillic.
 //
