@@ -1,5 +1,5 @@
 // Topic resolution: a Topic given by name or as a Wikidata item id becomes one Wikidata item, whose linked
-// Articles are the default Baskets (spec "Topic resolution", ADR 0002). Nothing here ever guesses: a name
+// Articles are the default Baskets. Nothing here ever guesses: a name
 // without one clearly dominant meaning is an Ambiguous topic, and an Edition without a linked Article is a
 // Missing article. An item with no Wikipedia Article at all (a scientific article, a book) can never be measured,
 // so, like a disambiguation page, it isn't a meaning of a Topic.
@@ -50,8 +50,9 @@ export function isItemId(topic: string): boolean {
 }
 
 /**
- * Searches Wikidata for a name and applies the rule of ADR 0002. Lists enough candidates to decide, or
- * LISTED_CANDIDATES when none is accepted or `listAll` is set.
+ * Searches Wikidata for a name and applies the resolution rule: the exact match with the most Wikipedia Articles
+ * wins only with at least DOMINANCE_RATIO times the next. Lists enough candidates to decide, or LISTED_CANDIDATES
+ * when none is accepted or `listAll` is set.
  */
 export async function searchName(
   http: Http,

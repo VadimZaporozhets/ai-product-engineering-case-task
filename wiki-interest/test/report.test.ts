@@ -8,7 +8,7 @@ import { EXIT_CODES } from "../src/cli.ts";
 import { fakeWikimedia } from "./fake-wikimedia.ts";
 import { EDITION_VIEWS, fourBaskets, linear, run, runFilePath, twoTopicsInTwoEditions } from "./run-cli.ts";
 
-/** The Narrative limits the agent is told about (spec "Report"). */
+/** The Narrative limits the agent is told about. */
 const LIMITS = { headline: 90, finding: 200, recommendation: 200, nextStep: 160 };
 
 type Narrative = Record<string, unknown>;

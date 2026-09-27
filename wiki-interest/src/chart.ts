@@ -1,4 +1,4 @@
-// The Run's chart (spec "Chart", ADR 0006): monthly Share of edition, one line per Basket, as a Vega-Lite spec
+// The Run's chart: monthly Share of edition, one line per Basket, as a Vega-Lite spec
 // rendered to SVG by vega's headless renderer, with no browser and no native modules.
 
 import type { TopLevelSpec } from "vega-lite";

@@ -1,4 +1,4 @@
-// Every threshold of the Verdict, in one place (spec "Metrics and Verdict").
+// Every threshold of the Verdict, in one place.
 // references/metrics.md states these numbers for the agent, and SKILL.md's Window section relies on seasonMonths and
 // significance (Windows not a multiple of 24 months, Windows of 4 months or fewer); change both with them.
 

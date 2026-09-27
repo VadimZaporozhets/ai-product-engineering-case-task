@@ -25,7 +25,7 @@ async function analyze(
 // exactly 50 per million.
 const shrinkingViews = linear(5_000, 3_500, WINDOW_24);
 
-// Expected Verdicts written down in the spec before implementation. If one disagrees with the output,
+// Expected Verdicts written down before implementation. If one disagrees with the output,
 // fix the implementation or raise the row for review; never edit a row to match the output.
 const SYNTHETIC_SERIES: {
   name: string;
@@ -212,7 +212,7 @@ describe("Checks", () => {
     expect(stdout).toMatch(/^ {2}- Full history: Астрономія has data only from 2025-03, .*2024-09.*created or renamed/m);
   });
 
-  // Calibration (ticket 10): Leo XIV in en was a redirect with 2 to 12 views a month for years before the Article
+  // Calibration on real data: Leo XIV in en was a redirect with 2 to 12 views a month for years before the Article
   // was created, so every month had "data" and Full history passed.
   test("Full history starts an Article at its first month with at least 5% of its usual views, not at a redirect's trickle", async () => {
     const { stdout, basket } = await analyze((month) => (month < "2025-03" ? 5 : 2_000));

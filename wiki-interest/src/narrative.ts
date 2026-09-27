@@ -1,4 +1,4 @@
-// The Narrative: the only text of a Report the agent writes (spec "Report", ADR 0003). The report command
+// The Narrative: the only text of a Report the agent writes. The report command
 // checks it here and lists every problem, so the agent can fix them all in one edit.
 
 /** Character limits that keep the Report on one page, at its longest Run and in Ukrainian. */

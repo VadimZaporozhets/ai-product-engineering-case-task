@@ -1,4 +1,4 @@
-// The Window: the span of complete months a Run analyses, exactly as asked (ADR 0007).
+// The Window: the span of complete months a Run analyses, exactly as asked.
 
 import { addMonths, isMonth, monthOf, monthsFrom } from "./months.ts";
 

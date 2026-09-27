@@ -2,7 +2,7 @@
 // Entry point of the wiki-interest CLI: node scripts/wiki-interest.js <command> [options]
 //
 // Plain JavaScript on purpose: it has to run on an old Node to say what's wrong before the
-// TypeScript sources load (ADR 0005). It prints the fix and never installs anything itself.
+// TypeScript sources load. It prints the fix and never installs anything itself.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

@@ -1,5 +1,5 @@
 {
-  // Type-check only. Node runs the .ts sources directly (ADR 0005), so tsc never emits.
+  // Type-check only. Node runs the .ts sources directly, so tsc never emits.
   "compilerOptions": {
     "target": "es2023",
     "lib": ["es2023"],
