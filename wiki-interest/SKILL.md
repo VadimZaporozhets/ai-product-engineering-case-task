@@ -10,22 +10,16 @@ Measures how many human readers look up a Topic in a Wikipedia Edition (one lang
 
 `<skill>` below stands for this skill's folder, the base directory this file was loaded from. Run every command from the user's working directory: each Run is saved there, in its own folder under `wiki-interest-runs/`.
 
-## Setup (once)
+## Setup (only after a setup error)
 
-Install the dependencies without dev tooling:
-
-```sh
-npm ci --omit=dev --prefix <skill>
-```
-
-A command that prints `setup error:` (exit 4) names its own fix:
+Don't install anything up front: the user installed the skill with its dependencies. Start with the Workflow. Only when a command prints `setup error:` (exit 4), follow the fix it names:
 
 - Dependencies not installed: run the `npm ci --omit=dev --prefix ...` line it prints, then your command again.
 - Node.js too old: tell the user to install Node.js 22.18 or newer (the message suggests `nvm install 24`). Installing Node is the user's step.
 
 ## Workflow
 
-1. **Turn the question into arguments** (next section).
+1. **Turn the question into arguments** (next section), and decide now whether the user wants a Report: yes if they asked for a PDF, a report or a "звіт" ("підготуй короткий звіт" is a Report), or something to share. If yes, you will run `report` in step 5.
 2. **Run `analyze`** with every Topic and Edition of the question in one call:
    ```sh
    node <skill>/scripts/wiki-interest.js analyze --topics astronomy --editions uk,pl
@@ -34,28 +28,36 @@ A command that prints `setup error:` (exit 4) names its own fix:
    - Exit 3, `blocked: Ambiguous topic`: show the user the candidate meanings with their descriptions, ask which one they mean, and stop until they answer. If Wikidata found no items, ask the user to check the name or its language instead.
    - Exit 3, any other `blocked:` (unknown Edition code, invalid Window, too many Topics or Editions): fix the arguments as the message says and run again. Ask the user only when the fix depends on what they meant.
    - Exit 4: see Setup.
-3. **Check the mapping**, the `resolution:` block. It names the Wikidata item chosen for each Topic, with its description. If the description doesn't fit the user's context (a music app asking about "Mercury" got the planet), run the `resolve` command printed under `next steps:`, pick the item that fits, and run the `rerun:` line again with that item id in `--topics`. Ask the user only if no candidate clearly fits.
+3. **Check the mapping**, the `resolution:` block. It names the Wikidata item chosen for each Topic, with its description. If the description doesn't fit the user's context (a music app asking about "Mercury" got the planet), run the `resolve` command printed under `next steps:`, pick the item that fits, and run the `rerun:` line again with that item id in `--topics`. Ask the user only if no candidate clearly fits. If the item has 0 Wikipedia Articles (a scientific article, a book), it can never be measured: run `analyze` again with the singular or a more common name (`solar eclipse` for "solar eclipses"). Never attach Articles to such an item with `--add-article`.
 4. **Answer from the output**, in the user's language, filling in this template in order. Show the mapping and carry on without waiting; the user doesn't need to confirm it first.
    ```
    Measured: <item id> <label> (<description>); <edition>: <Article>, <edition>: <Article>, <edition>: Missing article
    Window: <first month> to <last month> (<n> months)
+   Chart: <path from the chart: line>
    <one line per row, in the printed order: Topic, Edition, the Verdict wording, Growth and Raw change worded as in "Reading the output", median monthly views>
      Reasons: <each Reason of that row, in plain words>
    Caveats: Interest is not willingness to pay. An Edition is a language, not a country.
-   Chart: <path from the chart: line>
+   My reading (only if the user asked what to do or which is best): <your judgement from the ranked rows, worded to match their Confidence>. This is my reading of the table, not the tool's.
    ```
-   Repeat the `Measured:` line for each Topic. Add your own conclusion after the template only if the user asked for a recommendation, and word it to match the Confidence.
-5. **Make a Report if the user asks for a PDF** (see Report).
+   With a Report, do step 5 first, then write this answer and add `PDF: <path from the report: line>` after `Chart:`. The PDF doesn't replace the answer.
+
+   Repeat the `Measured:` line for each Topic. If the Topic stands in for what the user asked about (the English language Article for learning English), say so on the `Measured:` line: `(a proxy for interest in learning English)`.
+5. **Make a Report if the user asks for a PDF or a report** ("звіт", "report", something to share). Do it before the step 4 answer (see Report).
 
 Budget: a common question takes at most 2 skill commands (`analyze`, plus `report` for a PDF) and at most 4 tool calls including the PDF, not counting Setup. Use `resolve` only when step 2 or 3 sends you there.
 
 ## Rules
 
-- **Never compute or estimate numbers.** Copy every number from the output exactly as printed. If the user wants a figure the output doesn't have (a total, a difference between rows, a forecast), say the tool doesn't give it.
+- **Never compute or estimate numbers.** Copy every number from the output exactly as printed: `17052`, not "17 thousand"; `46.4%`, not "46%". No ratios ("129 times fewer"), ranges ("7 to 9 thousand", "10–11%"), rounding ("about 26") or sums. If the user wants a figure the output doesn't have (a total, a difference between rows, a forecast), say the tool doesn't give it.
 - **Never substitute Articles.** Analyse only the Articles in `resolution:`. Add another with `--add-article` only when the user picks it.
-- **Name only what the Run analysed.** Call each Edition by its language as its code says (`uk` is Ukrainian Wikipedia, read by the Ukrainian-speaking audience; `pl` is Polish Wikipedia). Never mention an Edition, language, audience or country the Run didn't analyse, in the answer or in the Narrative. Suggest follow-up checks in general terms (search trends, user interviews), without naming services the user didn't mention.
+- **Name only what the Run analysed.** Call each Edition by its language as its code says (`uk` is Ukrainian Wikipedia, read by the Ukrainian-speaking audience; `pl` is Polish Wikipedia). Never mention an Edition, language, audience or country the Run didn't analyse, in the answer or in the Narrative. Suggest follow-up checks in general terms only: "check search data and talk to users". Name no search engine, analytics tool or other service (no Google Trends, no Yandex) unless the user named it first.
+- **A report is the PDF.** When the user asks for a report, a "звіт", something to share, or a PDF, make the Report (step 5). Your chat answer is not a report.
+- **Always give the chart path** from the `chart:` line, in every answer, follow-ups and answers with a PDF included. Leave it out only when the line says `chart: none`.
 - **Always state the Confidence and its Reasons** next to every Direction.
 - **Always include both Caveats**: Interest is not willingness to pay, and an Edition is a language, not a country.
+- **Check every comparison against its column.** "The biggest", "the only", "the smallest", "fastest" are claims about numbers: before writing one, read that column for every row. Median monthly views measure audience size; views per million (Share of edition) measure interest relative to the Edition's size. Say which one you mean.
+- **Use only the Run output and what the user told you.** No facts about markets, companies, competitors or countries from your own knowledge.
+- **Recommend only from the ranked table.** A row under `not enough evidence` (low, insufficient, Missing article, `error:`) is never the best, the most promising or a priority. A Missing article means that audience can't be measured this way; it is not a gap in the market or a lack of competition.
 - **When the user's idea of "promising" isn't a `--rank` option**, keep the default ranking, reason over the ranked table in prose, and say that this judgement is yours, not the tool's.
 - **When the user asks "why?"** about a Verdict, a metric or a Check, read [references/metrics.md](references/metrics.md) and explain from it.
 
@@ -67,6 +69,7 @@ Comma-separated Topic names as the user says them, quoted when they contain spac
 
 - Names in another language: add that language's code, `--topics астрономія --name-lang uk`. One Run has one `--name-lang`, so when the user mixes languages, write the names in English.
 - A Wikidata item id (`Q333`) skips the name search. Ids and names can be mixed: `--topics Q333,yoga`.
+- Learning a subject or a language ("вивчення англійської", "learning Spanish"): use the subject or the language itself (`--topics 'English language'`). Its Article exists in almost every Edition; Articles on learning it are missing in most. Say that the Article is a proxy for interest in learning it, and offer the learning Article as an `--add-article` follow-up.
 - A broad Topic can take more Articles when the user wants them: `--add-article '<Topic as in --topics>:<edition>:<Article title>'`, once per Article. Views are summed.
 
 ### Editions: `--editions`
@@ -134,22 +137,39 @@ In order:
 
 ## Verdict wording
 
-Give the meaning in the user's language. Put the Reasons right after the wording.
+Copy the wording for the row, in the user's language: the Ukrainian column word for word, or the English one translated. Put the Reasons right after it. For an insufficient row, don't describe its Growth as a trend.
 
-| Direction | Confidence | Say |
-|---|---|---|
-| growing | high | Interest is growing. |
-| growing | medium | Interest is probably growing, with one reservation: (the Reason). |
-| growing | low | An early signal of growth, not evidence. |
-| flat | high | Interest is steady. |
-| flat | medium | Interest looks steady, with one reservation: (the Reason). |
-| flat | low | No clear change; an early signal, not evidence. |
-| declining | high | Interest is declining. |
-| declining | medium | Interest is probably declining, with one reservation: (the Reason). |
-| declining | low | An early signal of decline, not evidence. |
-| none | insufficient | Too little data to judge a direction. |
-| none | insufficient, Missing article | Can't be measured: this Edition has no Article on the Topic. That itself says the Edition covers the Topic poorly. |
-| `error:` row | none | Couldn't be loaded: (the reason printed). |
+| Direction | Confidence | Say | Українською |
+|---|---|---|---|
+| growing | high | Interest is growing. | Інтерес зростає. |
+| growing | medium | Interest is probably growing, with one reservation: (the Reason). | Інтерес, імовірно, зростає, з одним застереженням: (причина). |
+| growing | low | An early signal of growth, not evidence. | Ранній сигнал зростання, а не доказ. |
+| flat | high | Interest is steady. | Інтерес стабільний. |
+| flat | medium | Interest looks steady, with one reservation: (the Reason). | Інтерес, схоже, стабільний, з одним застереженням: (причина). |
+| flat | low | No clear change; an early signal, not evidence. | Чіткої зміни немає; це ранній сигнал, а не доказ. |
+| declining | high | Interest is declining. | Інтерес знижується. |
+| declining | medium | Interest is probably declining, with one reservation: (the Reason). | Інтерес, імовірно, знижується, з одним застереженням: (причина). |
+| declining | low | An early signal of decline, not evidence. | Ранній сигнал зниження, а не доказ. |
+| none | insufficient | Too little data to judge a direction. | Замало даних, щоб судити про напрям. |
+| none | insufficient, Missing article | Can't be measured: this Edition has no Article on the Topic. That itself says the Edition covers the Topic poorly. | Виміряти неможливо: у цьому розділі немає статті на цю тему. Це саме по собі свідчить, що розділ слабко висвітлює тему. |
+| `error:` row | none | Couldn't be loaded: (the reason printed). | Не вдалося завантажити: (причина). |
+
+In Ukrainian, use these words and no English ones:
+
+| Term | Українською |
+|---|---|
+| a named Edition, e.g. `uk`, `pl` | українська Вікіпедія, польська Вікіпедія (a language adjective + Вікіпедія; never "видання", "редакція", "Edition") |
+| Editions in general | розділ Вікіпедії ("у цьому розділі") |
+| Growth | частка <польської> Вікіпедії в переглядах впала (зросла) на N% |
+| Raw change | кількість переглядів впала (зросла) на N% |
+| Missing article | немає статті |
+| median monthly views | медіана переглядів на місяць |
+| views per million | переглядів на мільйон переглядів розділу (never ‰) |
+| Confidence: high, medium, low, insufficient | впевненість: висока, середня, низька, недостатня |
+| template labels | `Що виміряно:`, `Період:`, `Графік:`, `PDF:`, `Причини:`, `Застереження:`, `Мій висновок:` |
+| months | січень, лютий, березень, квітень, травень, червень, липень, серпень, вересень, жовтень, листопад, грудень |
+| follow-up checks | перевірте дані пошукових запитів і поговоріть з користувачами |
+| Caveats | Застереження: інтерес — це не готовність платити. Розділ Вікіпедії — це мова, а не країна. |
 
 ## Follow-ups
 
@@ -195,14 +215,16 @@ Word it as in the Verdict wording table: Polish interest can't be measured this 
 **Other blocked Runs** (exit 3) say what to change:
 
 ```
-blocked: unknown Edition code: ukk. Wikimedia has no pageviews for ukk.wikipedia.org in the Window. Use Wikipedia language codes such as en, uk, pl or zh-min-nan.
+blocked: unknown Edition code: cz. Wikimedia has no pageviews for cz.wikipedia.org in the Window. Edition codes are Wikipedia language codes such as en, uk, pl or zh-min-nan, not country codes.
+  cz is a country code, did you mean cs (Czech)?
+Re-run with --editions cs,sk and tell the user which code you used.
 blocked: invalid Window: 2026-09 is not complete yet; the last complete month is 2026-08. Nearest valid Window: --months 24 --end 2026-08
 blocked: a Run analyses at most 5 Topics and 10 Editions, and this one asks for 6 Topics. Ask the user which matter most, or split the question into these Runs, which share one Window, and answer from all of their tables:
   node .../wiki-interest.js analyze --topics 'a,b,c' --editions uk --months 24 --end 2026-08
   node .../wiki-interest.js analyze --topics 'd,e,f' --editions uk --months 24 --end 2026-08
 ```
 
-Fix the Edition code, use the nearest valid Window and tell the user, or run each printed smaller Run and answer from all of their tables.
+Fix the Edition code (run the printed `--editions` if there is one), use the nearest valid Window, or run each printed smaller Run and answer from all of their tables. Don't stop to ask unless the message says to. Start the answer by saying what you changed: "`cz` isn't a Wikipedia code, so I used `cs`, Czech Wikipedia."
 
 **Failed requests** (exit 2). The row reads `error: <reason>` and the Run keeps every other row. Answer from the other rows and name what failed. If the reason is about an `--add-article` (not an Article, only a redirect), correct or drop that option in the `rerun:` line; otherwise run the `rerun:` line again later. `resolve` also exits 2, with an `error:` line, when it can't reach Wikidata; try it again later.
 
@@ -220,20 +242,20 @@ The Report's table, chart, Basket definitions, method and Caveats come from the 
 | Field | Content | Limit |
 |---|---|---|
 | `language` | the user's language code, e.g. `"uk"` or `"en"` | a language code |
-| `headline` | the answer in one line | 90 characters |
-| `findings` | a list of 1 to 3 findings, each with its Direction, Confidence and the numbers behind it, Growth and Raw change worded as in "Reading the output" | 200 characters each |
-| `recommendation` | what to do, worded to match the Confidence | 200 characters |
-| `nextStep` | the next check or decision | 160 characters |
+| `headline` | the answer in one line, in this shape: `<Topic>: <short Verdict wording> (<Edition>)`, e.g. `Йога: інтерес знижується (польська Вікіпедія)`. With several rows, use the first ranked row, or the first row if none is ranked. | 90 characters |
+| `findings` | 1 to 3 findings, one per row that matters most, each in this shape and nothing more: `<Edition>: <Verdict wording without the reservation>, <Growth wording>, median <n> views a month.`, e.g. `Польська Вікіпедія: інтерес знижується, частка польської Вікіпедії в переглядах впала на 12.6%, медіана 2167 переглядів на місяць.` A Missing article: `<Edition>: can't be measured, it has no Article on <Topic>.` Leave out the reservation, the Reasons and Raw change: the Report's table shows them. A medium row keeps its "probably" ("інтерес, імовірно, знижується"); a low row keeps "early signal". | 200 characters each |
+| `recommendation` | what to do, worded to match the Confidence | 200 characters: at most 15 words |
+| `nextStep` | the next check or decision | 160 characters: at most 12 words |
 
-Write the Narrative in the user's language. Every number in it is copied from the output, and every Edition and audience it names is one the Run analysed. The Report's fixed labels exist in English and Ukrainian; any other language gets English labels around your Narrative.
+The limits are hard: `report` refuses a longer field, which costs two more tool calls. Write short; the Report already shows the table, Reasons and Caveats. Write the Narrative in the user's language. Every number in it is copied from the output, and every Edition and audience it names is one the Run analysed. The Report's fixed labels exist in English and Ukrainian; any other language gets English labels around your Narrative.
 
 ```json
 {
   "language": "en",
-  "headline": "Intermittent fasting: small, falling interest in Czech; no Polish article",
+  "headline": "Intermittent fasting: probably declining (Czech Wikipedia)",
   "findings": [
-    "Czech Wikipedia: probably declining (its share of Czech Wikipedia's views fell 47.0%), medium Confidence: median monthly views are only 232.",
-    "Polish Wikipedia has no Article on intermittent fasting, so Polish interest can't be measured this way."
+    "Czech Wikipedia: interest is probably declining, its share of Czech Wikipedia's views fell 47.0%, median 232 views a month.",
+    "Polish Wikipedia: can't be measured, it has no Article on intermittent fasting."
   ],
   "recommendation": "Don't build a Czech or Polish intermittent fasting course on this evidence alone.",
   "nextStep": "Check search data for the Topic in Czech and Polish before deciding."

@@ -124,11 +124,43 @@ describe("analyze one Topic in one Edition", () => {
 
     expect(code).toBe(EXIT_CODES.blocked);
     expect(stdout).toMatch(/^blocked: unknown Edition code: xx\. Wikimedia has no pageviews for xx\.wikipedia\.org/m);
+    expect(stdout).toContain("not country codes");
+    expect(stdout).not.toContain("did you mean");
     expect(fake.requests.map((url) => url.pathname)).toEqual([
       "/api/rest_v1/metrics/pageviews/aggregate/uk.wikipedia.org/all-access/user/monthly/20240901/20260831",
       "/api/rest_v1/metrics/pageviews/aggregate/xx.wikipedia.org/all-access/user/monthly/20240901/20260831",
     ]);
     expect(readdirSync(outputDir)).toEqual([]);
+  });
+
+  test("names the language code when an unknown Edition code is a country code", async () => {
+    const fake = astronomyInUkrainian()
+      .editionTotals("uk", () => 100_000_000)
+      .article("uk", "Астрономія", () => 3_000);
+
+    const { code, stdout } = await run(["analyze", "--topics", "Q333", "--editions", "uk,by,ua"], fake);
+
+    expect(code).toBe(EXIT_CODES.blocked);
+    expect(stdout).toContain("blocked: unknown Edition code: by, ua.");
+    expect(stdout).toContain("by is a country code, did you mean be (Belarusian)?");
+    expect(stdout).toContain("ua is a country code, did you mean uk (Ukrainian)?");
+    expect(stdout).toContain("Re-run with --editions uk,be");
+    expect(stdout).toContain("and tell the user which code you used");
+  });
+
+  test("names the country codes it knows and asks about the rest when unknown codes are mixed", async () => {
+    const fake = astronomyInUkrainian()
+      .editionTotals("uk", () => 100_000_000)
+      .article("uk", "Астрономія", () => 3_000);
+
+    const { code, stdout } = await run(["analyze", "--topics", "Q333", "--editions", "uk,by,constructor"], fake);
+
+    expect(code).toBe(EXIT_CODES.blocked);
+    expect(stdout).toContain("blocked: unknown Edition code: by, constructor.");
+    expect(stdout).toContain("by is a country code, did you mean be (Belarusian)?");
+    expect(stdout).not.toContain("constructor is a country code");
+    expect(stdout).not.toContain("Re-run with");
+    expect(stdout).toContain("ask the user which language they mean");
   });
 
   test.each([
