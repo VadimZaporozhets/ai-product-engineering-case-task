@@ -88,11 +88,11 @@ High and medium Confidence rows are ranked, best first, by the chosen criterion:
 - `interest`: median monthly views, the biggest Audience.
 - `share`: Share of edition over the second half of the Window, the most recent part of the Edition's reading.
 
-Everything else goes to the `not enough evidence` group, which is never ranked: low Confidence first, then insufficient (including Missing articles), then rows that failed to load. Weak evidence never looks like a winner.
+Everything else goes to the `not enough evidence` group, which is never ranked: low Confidence first, then insufficient (including Missing articles), then rows that failed to load. Weak evidence never looks like a winner. For the same reason, the `leaders (ranked rows):` line under the ranked table names the leader of each column over ranked rows only, with each leader's Direction, and the `directions (ranked rows):` line after it groups the ranked rows by Direction.
 
 ## How a Topic becomes Articles
 
-- The Topic name is searched on Wikidata in its language (`--name-lang`, English by default). Candidates are the items whose label or an alias matches the name exactly, ignoring case. Disambiguation pages are left out. When nothing matches exactly, the Run stops as an Ambiguous topic and lists the closest search hits.
+- The Topic name is searched on Wikidata in its language (`--name-lang`, English by default). Candidates are the items whose label or an alias matches the name exactly, ignoring case. Disambiguation pages and items with 0 Wikipedia Articles (a scientific article, a book) are left out. When nothing is left, the Run stops as an Ambiguous topic and lists the closest search hits.
 - Each candidate counts its Articles across Wikipedia Editions only (not Commons, Wiktionary or other projects). The candidate with the most is chosen if it has at least 3 times as many as the next. Otherwise the Topic is an **Ambiguous topic** and the Run stops for the user to choose. When measured, "Mercury" stopped (planet 250, element 176) and "astronomy" didn't (252 against 9).
 - In each Edition, the Basket is the Article linked from the chosen item. When there is none, the Topic is a **Missing article** in that Edition: its Confidence is insufficient, and up to 3 search results from that Edition are listed but never analysed. A plain search can return unrelated Articles: for intermittent fasting, Polish Wikipedia's top result is about oxidative stress. The gap itself is a finding: that Edition covers the Topic poorly.
 

@@ -6,6 +6,9 @@ import type { Metrics } from "./metrics.ts";
 import type { RankingCriterion } from "./ranking.ts";
 import type { Verdict } from "./verdict.ts";
 
+/** A Basket's figures as the table prints them. */
+export type FigureCells = Record<"growth" | "rawChange" | "median" | "perMillion", string>;
+
 /** The parts of a Basket the table reads. */
 type TableBasket = { edition: string; metrics?: Metrics; verdict?: Verdict; error?: string };
 
@@ -33,30 +36,36 @@ export function tableRow(basket: TableBasket, topic: string, labels: Labels, ran
   ];
 }
 
+/** The figures in the table's column order. */
+function tableFigures(metrics: Metrics | undefined, ranking: RankingCriterion): string[] {
+  const { growth, rawChange, median, perMillion } = figureCells(metrics, ranking);
+  return [growth, rawChange, median, perMillion];
+}
+
 /**
  * Growth, Raw change, median monthly views and views per million, as the table writes them. A Basket judged without
  * views (a Missing article) has no metrics: every figure is n/a.
  */
-function tableFigures(metrics: Metrics | undefined, ranking: RankingCriterion): string[] {
+export function figureCells(metrics: Metrics | undefined, ranking: RankingCriterion): FigureCells {
   const median = metrics?.medianMonthlyViews ?? null;
   const perMillion = metrics ? perMillionOf(metrics, ranking) : null;
-  return [
-    percent(metrics?.growth ?? null),
-    percent(metrics?.rawChange ?? null),
-    median === null ? "n/a" : String(Math.round(median)),
-    perMillion === null ? "n/a" : perMillion.toFixed(2),
-  ];
+  return {
+    growth: percent(metrics?.growth ?? null),
+    rawChange: percent(metrics?.rawChange ?? null),
+    median: median === null ? "n/a" : String(Math.round(median)),
+    perMillion: perMillion === null ? "n/a" : perMillion.toFixed(2),
+  };
 }
 
 /**
  * Whether the views per million column is the second half's. Ranked by share, it shows the second half's figure the
  * ranking sorts by, so the column reads in rank order; otherwise the whole Window's.
  */
-function perMillionIsSecondHalf(ranking: RankingCriterion): boolean {
+export function perMillionIsSecondHalf(ranking: RankingCriterion): boolean {
   return ranking === "share";
 }
 
-function perMillionOf(metrics: Metrics, ranking: RankingCriterion): number | null {
+export function perMillionOf(metrics: Metrics, ranking: RankingCriterion): number | null {
   return perMillionIsSecondHalf(ranking) ? metrics.halves.second.viewsPerMillion : metrics.viewsPerMillion;
 }
 

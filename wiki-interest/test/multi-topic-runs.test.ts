@@ -376,6 +376,9 @@ describe("ranking", () => {
         { topic: "Q333", edition: "pl" },
       ],
       notEnoughEvidence: [{ topic: "Q413", edition: "pl" }],
+      // The leaders and directions lines have their own tests.
+      leaders: expect.any(Array),
+      directions: expect.any(Object),
     });
   });
 
@@ -454,5 +457,136 @@ describe("ranking", () => {
         "astronomy (Q333) in uk",
       ],
     });
+  });
+});
+
+/** The cells of a result row, found by its Topic and Edition cells. */
+function rowCells(stdout: string, topic: string, edition: string): string[] {
+  const line = stdout.split("\n").find((candidate) => candidate.startsWith(`| ${topic} | ${edition} | `))!;
+  return line.slice(2, -2).split(" | ");
+}
+
+function directionsLine(stdout: string): string {
+  return stdout.split("\n").find((line) => line.startsWith("directions (ranked rows): "))!;
+}
+
+function leadersLine(stdout: string): string {
+  return stdout.split("\n").find((line) => line.startsWith("leaders (ranked rows): "))!;
+}
+
+describe("the leaders line", () => {
+  test("follows the ranked table and names the leader of each column with the value the table prints and its Direction", async () => {
+    const fake = fourBaskets();
+
+    const { stdout } = await run(["analyze", "--topics", "Q333,Q413", "--editions", "uk,pl"], fake);
+
+    const astronomyUk = rowCells(stdout, "astronomy (Q333)", "uk");
+    const astronomyPl = rowCells(stdout, "astronomy (Q333)", "pl");
+    // Cells: Topic, Edition, Direction, Confidence, Growth, Raw change, median monthly views, views per million.
+    expect(leadersLine(stdout)).toBe(
+      "leaders (ranked rows): " +
+        `most median monthly views: astronomy (Q333) pl ${astronomyPl[6]} (${astronomyPl[2]}); ` +
+        `highest views per million: astronomy (Q333) pl ${astronomyPl[7]} (${astronomyPl[2]}); ` +
+        `highest Growth: astronomy (Q333) uk ${astronomyUk[4]} (${astronomyUk[2]}); ` +
+        `lowest Growth: astronomy (Q333) pl ${astronomyPl[4]} (${astronomyPl[2]})`,
+    );
+    const lines = stdout.split("\n");
+    const tableEnd = lines.indexOf("", lines.findIndex((line) => line.startsWith("ranked by growth")));
+    expect(lines[tableEnd - 1]).toBe(directionsLine(stdout));
+    expect(lines[tableEnd - 2]).toBe(leadersLine(stdout));
+    expect(lines[tableEnd - 3]).toMatch(/^\| astronomy \(Q333\) \| pl \|/);
+  });
+
+  test("never names a row with not enough evidence, even when its figures are the highest", async () => {
+    const fake = twoTopicsInTwoEditions()
+      .item("Q413", { label: "physics", description: "natural science", articles: { uk: "Фізика" } })
+      .article("uk", "Астрономія", () => 5_000)
+      // A news Spike: growing, with low Confidence, and the highest views per million and Growth of the Run.
+      .article("pl", "Astronomia", () => 3_000, { extra: { "2026-04-15": 60_000 } })
+      .article("uk", "Фізика", () => 4_000);
+
+    const { stdout } = await run(["analyze", "--topics", "Q413,Q333", "--editions", "pl,uk"], fake);
+
+    expect(stdout).toContain("| astronomy (Q333) | pl | growing | low |");
+    // Both ranked rows are flat at +0.0%, so both lead on Growth, and the Direction says the highest isn't growing.
+    expect(leadersLine(stdout)).toBe(
+      "leaders (ranked rows): most median monthly views: astronomy (Q333) uk 5000 (flat); " +
+        "highest views per million: astronomy (Q333) uk 50.00 (flat); " +
+        "highest Growth: physics (Q413) uk +0.0% (flat), astronomy (Q333) uk +0.0% (flat); " +
+        "lowest Growth: physics (Q413) uk +0.0% (flat), astronomy (Q333) uk +0.0% (flat)",
+    );
+    // The growing row has low Confidence, so no ranked row is growing.
+    expect(directionsLine(stdout)).toBe(
+      "directions (ranked rows): growing: none; flat: physics (Q413) uk, astronomy (Q333) uk; declining: none",
+    );
+  });
+
+  test("ranked by share, names the leader of the second half's views per million, as the column does", async () => {
+    const fake = fourBaskets();
+
+    const { stdout } = await run(["analyze", "--topics", "Q333,Q413", "--editions", "uk,pl", "--rank", "share"], fake);
+
+    const astronomyUk = rowCells(stdout, "astronomy (Q333)", "uk");
+    expect(leadersLine(stdout)).toContain(
+      `; highest views per million (2nd half): astronomy (Q333) uk ${astronomyUk[7]} (${astronomyUk[2]});`,
+    );
+  });
+
+  test.each([
+    { rows: "one ranked row", pl: () => 5_000 },
+    { rows: "no ranked rows", pl: () => 50 },
+  ])("with $rows, says there is nothing to compare", async ({ pl }) => {
+    const fake = twoTopicsInTwoEditions().article("uk", "Астрономія", () => 50).article("pl", "Astronomia", pl);
+
+    const { stdout } = await run(["analyze", "--topics", "Q333", "--editions", "uk,pl"], fake);
+
+    expect(leadersLine(stdout)).toBe("leaders (ranked rows): none, fewer than 2 ranked rows to compare");
+    expect(stdout).not.toContain("directions (ranked rows)");
+    expect(runJson(stdout).ranking.leaders).toEqual([]);
+  });
+
+  test("groups every ranked row by its Direction, in table order, so a claim like \"the only stable one\" can be read", async () => {
+    const fake = fourBaskets();
+
+    const { stdout } = await run(["analyze", "--topics", "Q333,Q413", "--editions", "uk,pl"], fake);
+
+    const ranked = [
+      ["astronomy (Q333)", "uk"],
+      ["physics (Q413)", "uk"],
+      ["astronomy (Q333)", "pl"],
+    ] as const;
+    const group = (direction: string) => {
+      const rows = ranked
+        .filter(([topic, edition]) => rowCells(stdout, topic, edition)[2] === direction)
+        .map(([topic, edition]) => `${topic} ${edition}`);
+      return `${direction}: ${rows.length ? rows.join(", ") : "none"}`;
+    };
+    expect(directionsLine(stdout)).toBe(
+      `directions (ranked rows): ${group("growing")}; ${group("flat")}; ${group("declining")}`,
+    );
+    // physics in pl isn't ranked, so it's in no group.
+    expect(directionsLine(stdout)).not.toContain("physics (Q413) pl");
+  });
+
+  test("the Run file records the same leaders", async () => {
+    const fake = fourBaskets();
+
+    const { stdout } = await run(["analyze", "--topics", "Q333,Q413", "--editions", "uk,pl"], fake);
+
+    const astronomyUk = rowCells(stdout, "astronomy (Q333)", "uk");
+    const astronomyPl = rowCells(stdout, "astronomy (Q333)", "pl");
+    const pl = { topic: "Q333", edition: "pl", direction: astronomyPl[2] };
+    const uk = { topic: "Q333", edition: "uk", direction: astronomyUk[2] };
+    expect(runJson(stdout).ranking.leaders).toEqual([
+      { label: "most median monthly views", value: astronomyPl[6], baskets: [pl] },
+      { label: "highest views per million", value: astronomyPl[7], baskets: [pl] },
+      { label: "highest Growth", value: astronomyUk[4], baskets: [uk] },
+      { label: "lowest Growth", value: astronomyPl[4], baskets: [pl] },
+    ]);
+    const { directions } = runJson(stdout).ranking;
+    const recorded = [...directions.growing, ...directions.flat, ...directions.declining];
+    expect(recorded).toHaveLength(3);
+    expect(directions[astronomyPl[2]!]).toContainEqual({ topic: "Q333", edition: "pl" });
+    expect(directions[astronomyUk[2]!]).toContainEqual({ topic: "Q333", edition: "uk" });
   });
 });

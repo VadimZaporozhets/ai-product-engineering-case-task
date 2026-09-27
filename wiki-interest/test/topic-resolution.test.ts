@@ -142,6 +142,56 @@ describe("Ambiguous topics", () => {
   });
 });
 
+describe("exact matches without a Wikipedia Article", () => {
+  // "SOLAR ECLIPSES", a scientific article with 0 Wikipedia Articles, is the only exact match for the plural. It can
+  // never be measured, so it isn't a meaning of the Topic: its de Basket would be a false Missing article.
+  test("are left out, and a name with no other exact match blocks with the closest search hits", async () => {
+    const fake = recordedWikimedia("solar-eclipses");
+
+    const { code, stdout, outputDir } = await run(["analyze", "--topics", "solar eclipses", "--editions", "de"], fake);
+
+    expect(code).toBe(EXIT_CODES.blocked);
+    expect(stdout).toMatch(
+      /^blocked: Ambiguous topic "solar eclipses" \(en\): no Wikidata item with a Wikipedia Article has this exact label or alias\. Closest search hits:$/m,
+    );
+    expect(stdout).not.toContain("Q81058885");
+    const candidates = stdout.split("\n").filter((line) => /^ {2}Q\d+ /.test(line));
+    expect(candidates.length).toBeGreaterThan(0);
+    for (const candidate of candidates) expect(candidate).not.toMatch(/\(0 Wikipedia Articles\)$/);
+    expect(stdout).toMatch(/^ {4}node .* analyze --topics '<item id>' --editions de --months 24 --end 2026-08$/m);
+    expect(fake.pageviewRequests().filter((url) => url.pathname.includes("/per-article/"))).toEqual([]);
+    expect(readdirSync(outputDir)).toEqual([]);
+  });
+
+  test("are left out of the resolve command's list too", async () => {
+    const fake = recordedWikimedia("solar-eclipses");
+
+    const { code, stdout } = await run(["resolve", "--topic", "solar eclipses", "--editions", "de"], fake);
+
+    expect(code).toBe(EXIT_CODES.success);
+    expect(stdout).toMatch(
+      /^resolve: no Wikidata item with a Wikipedia Article has "solar eclipses" \(en\) as its exact label or alias\. Closest search hits:$/m,
+    );
+    expect(stdout).not.toContain("Q81058885");
+    expect(stdout).toMatch(/^result: Ambiguous topic: /m);
+  });
+
+  test("don't count as the next meaning when another exact match has Articles", async () => {
+    const fake = fakeWikimedia()
+      .item("Q3887", { label: "solar eclipse", description: "natural phenomenon", articles: { de: "Sonnenfinsternis" } })
+      .item("Q81058885", { label: "solar eclipse", description: "scientific article", articles: {} })
+      .search("solar eclipse", ["Q81058885", "Q3887"])
+      .editionTotals("de", () => 100_000_000)
+      .article("de", "Sonnenfinsternis", () => 3_000);
+
+    const { code, stdout } = await run(["analyze", "--topics", "solar eclipse", "--editions", "de"], fake);
+
+    expect(code).toBe(EXIT_CODES.success);
+    expect(stdout).toContain('    chosen for "solar eclipse" (en) from 1 exact match\n');
+    expect(stdout).not.toContain("Q81058885");
+  });
+});
+
 describe("Ambiguous topics without an exact match", () => {
   test("blocks the Run and lists the closest search hits", async () => {
     const fake = fakeWikimedia()
@@ -153,7 +203,8 @@ describe("Ambiguous topics without an exact match", () => {
 
     expect(code).toBe(EXIT_CODES.blocked);
     expect(stdout).toContain(
-      'blocked: Ambiguous topic "intermitent fasting" (en): no Wikidata item has this exact label or alias. Closest search hits:\n' +
+      'blocked: Ambiguous topic "intermitent fasting" (en): no Wikidata item with a Wikipedia Article has this exact label ' +
+        "or alias. Closest search hits:\n" +
         "  Q1666254 intermittent fasting: a diet (1 Wikipedia Article)\n",
     );
     expect(stdout).toMatch(/^ {4}node .* analyze --topics '<item id>' --editions cs --months 24 --end 2026-08$/m);
@@ -165,7 +216,7 @@ describe("Ambiguous topics without an exact match", () => {
     const { code, stdout } = await run(["analyze", "--topics", "xyzzy", "--editions", "cs"], fake);
 
     expect(code).toBe(EXIT_CODES.blocked);
-    expect(stdout).toContain('blocked: Ambiguous topic "xyzzy" (en): Wikidata search found no items.');
+    expect(stdout).toContain('blocked: Ambiguous topic "xyzzy" (en): Wikidata search found no items with a Wikipedia Article.');
     expect(stdout).toContain("check the spelling");
     expect(stdout).not.toContain("analyze --topics");
   });
