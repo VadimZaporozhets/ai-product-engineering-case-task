@@ -10,6 +10,7 @@ import { languageForCountryCode } from "./edition-codes.ts";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.ts";
 import { createHttp, RequestFailed, type Fetch, type Http } from "./http.ts";
 import { ENGLISH_LABELS, labelsFor } from "./labels.ts";
+import { byDirection, leaders, type Leader } from "./leaders.ts";
 import { measureBasket, type Metrics, type MonthRow } from "./metrics.ts";
 import { monthRange } from "./months.ts";
 import {
@@ -36,7 +37,7 @@ import { fieldList, parseNarrative } from "./narrative.ts";
 import { createRunFolder, readRunJson, RUN_FILE, writeChartSvg, writeReportPdf, writeRunJson } from "./run-files.ts";
 import { chartLines, chooseLines, hasViews, MAX_CHART_LINES, renderChart, topicName } from "./chart.ts";
 import { tableColumns, tableRow } from "./table.ts";
-import { judge, missingArticleVerdict, type Verdict } from "./verdict.ts";
+import { judge, missingArticleVerdict, type Direction, type Verdict } from "./verdict.ts";
 import { resolveWindow, type Window } from "./window.ts";
 import { fetchItems, lookupArticle, project, type WikidataItem } from "./wikimedia.ts";
 
@@ -150,7 +151,15 @@ export type RunRecord = {
       | undefined;
   }[];
   baskets: Basket[];
-  ranking: { by: RankingCriterion; ranked: BasketKey[]; notEnoughEvidence: BasketKey[] };
+  ranking: {
+    by: RankingCriterion;
+    ranked: BasketKey[];
+    notEnoughEvidence: BasketKey[];
+    /** The leaders analyze prints under the ranked table, each with its Direction; empty with fewer than 2 ranked rows. */
+    leaders: Leader<BasketKey & { direction: Direction | null }>[];
+    /** The ranked rows of each Direction, in table order. analyze prints them only with the leaders. */
+    directions: Record<Direction, BasketKey[]>;
+  };
   /** The Baskets the chart draws, in legend order. */
   chart: BasketKey[];
 };
@@ -321,6 +330,8 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
   const names = new Map(resolved.map(({ item }) => [item.id, labelOf(item, nameLanguage)]));
   const rerun = analyzeCommand(request, idOf);
   const { ranked, notEnoughEvidence } = rank(baskets, ranking);
+  const rankedLeaders = leaders(ranked, ranking);
+  const directions = byDirection(ranked);
   // Reasons and next steps follow the tables' order.
   const inTableOrder = [...ranked, ...notEnoughEvidence];
   const keyOf = ({ topic, edition }: Basket) => ({ topic, edition });
@@ -353,6 +364,15 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
       by: ranking,
       ranked: ranked.map(keyOf),
       notEnoughEvidence: notEnoughEvidence.map(keyOf),
+      leaders: rankedLeaders.map((leader) => ({
+        ...leader,
+        baskets: leader.baskets.map((basket) => ({ ...keyOf(basket), direction: basket.verdict?.direction ?? null })),
+      })),
+      directions: {
+        growing: directions.growing.map(keyOf),
+        flat: directions.flat.map(keyOf),
+        declining: directions.declining.map(keyOf),
+      },
     },
     chart: charted.map(keyOf),
   };
@@ -371,6 +391,7 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
     ...resolved.flatMap((resolution) => resolutionLines(resolution, editions, baskets, nameLanguage)),
     "",
     ...tableLines(rankingHeading(ranking), ranked, names, ranking),
+    ...leadersLines(rankedLeaders, directions, names),
     "",
     ...tableLines(
       "not enough evidence (low or insufficient Confidence, Missing articles and errors; not ranked)",
@@ -432,12 +453,13 @@ async function resolve(argv: string[], deps: Dependencies, http: Http): Promise<
   const heading = search.exact
     ? `resolve: "${topic}" (${nameLanguage}) matches ${matches} Wikidata items by exact label or alias, ` +
       "most Wikipedia Articles first:"
-    : `resolve: no Wikidata item has "${topic}" (${nameLanguage}) as its exact label or alias. Closest search hits:`;
+    : `resolve: no Wikidata item with a Wikipedia Article has "${topic}" (${nameLanguage}) as its exact label or alias. ` +
+      "Closest search hits:";
   const outcome = search.accepted
     ? `analyze accepts ${search.accepted.item.id} for "${topic}": it has at least ${DOMINANCE_RATIO} times ` +
       "as many Wikipedia Articles as the next match."
     : search.candidates.length === 0
-      ? "Ambiguous topic: nothing found. Check the spelling, give the name's language with --name-lang, " +
+      ? "Ambiguous topic: nothing with a Wikipedia Article found. Check the spelling, give the name's language with --name-lang, " +
         "or give a Wikidata item id."
       : `Ambiguous topic: analyze won't pick one. Ask the user which meaning they mean, then run analyze ` +
         "with --topics <item id>.";
@@ -507,11 +529,13 @@ function blockedAmbiguous(
 ): ExitCode {
   const lines = searches.flatMap((search) => {
     const topic = `Ambiguous topic "${search.name}" (${search.language})`;
-    if (search.candidates.length === 0) return [`blocked: ${topic}: Wikidata search found no items.`];
+    if (search.candidates.length === 0) {
+      return [`blocked: ${topic}: Wikidata search found no items with a Wikipedia Article.`];
+    }
     const problem = search.exact
       ? `no exact label or alias match has at least ${DOMINANCE_RATIO} times as many Wikipedia Articles as the next. ` +
         "Candidates, most Wikipedia Articles first:"
-      : "no Wikidata item has this exact label or alias. Closest search hits:";
+      : "no Wikidata item with a Wikipedia Article has this exact label or alias. Closest search hits:";
     return [
       `blocked: ${topic}: ${problem}`,
       ...search.candidates.map((candidate) => `  ${candidateLine(candidate, search.language)}`),
@@ -698,6 +722,31 @@ function tableLines(
       return row(cells) + " |".repeat(columns.length - cells.length);
     }),
   ];
+}
+
+/**
+ * The leader of each column of the ranked table, with the value the table prints and the row's Direction, so the
+ * highest Growth of a flat row doesn't read as growth. Then every ranked row grouped by Direction, so "the only
+ * stable one" can be checked against the output.
+ */
+function leadersLines(
+  leading: Leader<Basket>[],
+  directions: Record<Direction, Basket[]>,
+  names: Map<string, string | undefined>,
+): string[] {
+  if (leading.length === 0) return ["leaders (ranked rows): none, fewer than 2 ranked rows to compare"];
+  const columns = leading.map(({ label, value, baskets }) => {
+    const rows = baskets.map((basket) => {
+      const direction = ENGLISH_LABELS.direction[basket.verdict?.direction ?? "none"];
+      return `${topicName(basket, names)} ${basket.edition} ${value} (${direction})`;
+    });
+    return `${label}: ${rows.join(", ")}`;
+  });
+  const groups = Object.entries(directions).map(([direction, baskets]) => {
+    const rows = baskets.map((basket) => `${topicName(basket, names)} ${basket.edition}`);
+    return `${direction}: ${rows.length ? rows.join(", ") : "none"}`;
+  });
+  return [`leaders (ranked rows): ${columns.join("; ")}`, `directions (ranked rows): ${groups.join("; ")}`];
 }
 
 /** The Reason of every failed Check, grouped under its Basket. */

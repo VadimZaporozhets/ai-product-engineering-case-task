@@ -1,13 +1,15 @@
 // Topic resolution: a Topic given by name or as a Wikidata item id becomes one Wikidata item, whose linked
 // Articles are the default Baskets (spec "Topic resolution", ADR 0002). Nothing here ever guesses: a name
 // without one clearly dominant meaning is an Ambiguous topic, and an Edition without a linked Article is a
-// Missing article.
+// Missing article. An item with no Wikipedia Article at all (a scientific article, a book) can never be measured,
+// so, like a disambiguation page, it isn't a meaning of a Topic.
 
 import {
   fetchItems,
   isDisambiguationPage,
   searchArticles,
   searchItems,
+  type SearchHit,
   type WikidataItem,
 } from "./wikimedia.ts";
 import type { Http } from "./http.ts";
@@ -30,11 +32,14 @@ export type NameSearch = {
   language: string;
   /** Whether the candidates match the name exactly, or are only the closest search hits. */
   exact: boolean;
-  /** Most Wikipedia Articles first, disambiguation pages left out. */
+  /** Most Wikipedia Articles first, disambiguation pages and items without a Wikipedia Article left out. */
   candidates: Candidate[];
   /** Further matches with fewer Wikipedia Articles, not listed. */
   more: number;
-  /** Every exact match, or every closest hit; disambiguation pages are only left out of `candidates`. */
+  /**
+   * Every exact match, or every closest hit, with a Wikipedia Article; disambiguation pages are only left out of
+   * `candidates`.
+   */
   matches: number;
   /** The candidate the name resolves to, if one dominates. */
   accepted: Candidate | undefined;
@@ -56,17 +61,19 @@ export async function searchName(
   const hits = await searchItems(http, name, options.language);
   const wanted = name.toLocaleLowerCase();
   const exactHits = hits.filter((hit) => hit.texts.some((text) => text.toLocaleLowerCase() === wanted));
-  const exact = exactHits.length > 0;
-  const pool = exact ? exactHits : hits.slice(0, LISTED_CANDIDATES);
-  const items = await fetchItems(
-    http,
-    pool.map((hit) => hit.id),
-    options.labelLanguages,
-  );
+  const measurable = async (pool: SearchHit[]) => {
+    const items = await fetchItems(
+      http,
+      pool.map((hit) => hit.id),
+      options.labelLanguages,
+    );
+    return [...items.values()].map(candidateOf).filter((candidate) => candidate.articleCount > 0);
+  };
+  const exactMatches = await measurable(exactHits);
+  const exact = exactMatches.length > 0;
+  const pool = exact ? exactMatches : await measurable(hits.slice(0, LISTED_CANDIDATES));
   // Sorting is stable, so equal counts keep the search's order.
-  const ranked = [...items.values()]
-    .map(candidateOf)
-    .sort((a, b) => b.articleCount - a.articleCount);
+  const ranked = pool.sort((a, b) => b.articleCount - a.articleCount);
 
   // Disambiguation pages are looked up one at a time, and only for the candidates that are decided on or listed.
   const candidates: Candidate[] = [];
