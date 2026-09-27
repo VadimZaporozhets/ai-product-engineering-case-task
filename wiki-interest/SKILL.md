@@ -74,7 +74,11 @@ Comma-separated Topic names as the user says them, quoted when they contain spac
 
 ### Editions: `--editions`
 
-Comma-separated Wikipedia language codes, at most 10. Most are ISO 639-1 codes. These are the ones that are easy to get wrong:
+Comma-separated Wikipedia language codes, at most 10.
+
+**The user chooses the Editions.** If the question names none ("in our chosen editions", "in our markets", "in several languages"), ask which languages or countries they mean and stop until they answer. Don't run `analyze` and don't pick Editions for them, not even as an example set: a table of Editions you chose reads as the user's own shortlist.
+
+Most codes are ISO 639-1 codes. These are the ones that are easy to get wrong:
 
 | Language | Code | Language | Code |
 |---|---|---|---|
