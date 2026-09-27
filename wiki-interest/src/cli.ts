@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { languageForCountryCode } from "./edition-codes.ts";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.ts";
 import { createHttp, RequestFailed, type Fetch, type Http } from "./http.ts";
 import { ENGLISH_LABELS, labelsFor } from "./labels.ts";
@@ -212,14 +213,7 @@ async function analyze(argv: string[], deps: Dependencies, http: Http): Promise<
     if (editionTotals === undefined) unknownEditions.push(edition);
     else totals.set(edition, editionTotals);
   }
-  if (unknownEditions.length > 0) {
-    return blocked(
-      deps,
-      `unknown Edition code: ${unknownEditions.join(", ")}. Wikimedia has no pageviews for ` +
-        `${unknownEditions.map(project).join(", ")} in the Window. ` +
-        "Use Wikipedia language codes such as en, uk, pl or zh-min-nan.",
-    );
-  }
+  if (unknownEditions.length > 0) return blockedUnknownEditions(deps, editions, unknownEditions);
 
   // Topics given as item ids are looked up together, in one request.
   const itemIds = topics.filter(isItemId);
@@ -894,6 +888,25 @@ function lookupItems(
 
 function noSuchItem(id: string): string {
   return `Wikidata item ${id} doesn't exist.`;
+}
+
+// Edition codes are language codes; a country code is the usual mistake, so name the language code it stands for.
+function blockedUnknownEditions(deps: Dependencies, editions: string[], unknown: string[]): ExitCode {
+  const guesses = new Map(unknown.map((code) => [code, languageForCountryCode(code)]));
+  const lines = [
+    `unknown Edition code: ${unknown.join(", ")}. Wikimedia has no pageviews for ${unknown.map(project).join(", ")} in the Window. ` +
+      "Edition codes are Wikipedia language codes such as en, uk, pl or zh-min-nan, not country codes.",
+  ];
+  for (const [code, guess] of guesses) {
+    if (guess) lines.push(`  ${code} is a country code, did you mean ${guess.code} (${guess.language})?`);
+  }
+  if ([...guesses.values()].every(Boolean)) {
+    const fixed = [...new Set(editions.map((code) => guesses.get(code)?.code ?? code))];
+    lines.push(`Re-run with --editions ${fixed.join(",")} and tell the user which code you used.`);
+  } else {
+    lines.push("Check the code, and ask the user which language they mean if you can't tell.");
+  }
+  return blocked(deps, lines.join("\n"));
 }
 
 function blocked(deps: Dependencies, message: string): ExitCode {
